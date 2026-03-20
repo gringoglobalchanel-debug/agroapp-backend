@@ -4,7 +4,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
 const helmet = require("helmet");
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // ✅ AGREGADO
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 require("dotenv").config();
 
 const app = express();
@@ -45,7 +45,7 @@ app.get("/", (req, res) => {
                 byProduct: "GET /vendor/orders/by-product",
                 updateStatus: "PATCH /vendor/orders/:id/status"
             },
-            payments: { // ✅ AGREGADO
+            payments: {
                 createIntent: "POST /payments/create-intent"
             }
         }
@@ -360,7 +360,7 @@ app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
     }
 });
 
-// ==================== STRIPE PAYMENTS ==================== ✅ NUEVA SECCIÓN
+// ==================== STRIPE PAYMENTS ====================
 
 // Ruta para crear Payment Intent de Stripe
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
@@ -372,16 +372,16 @@ app.post('/payments/create-intent', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'Monto inválido' });
         }
 
-        // Crear PaymentIntent en Stripe (convertir a centavos)
+        // ✅ CORREGIDO: amount ya viene en centavos desde Android
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(amount * 100),
+            amount: amount,  // ← YA NO MULTIPLICAMOS POR 100
             currency: currency,
             metadata: {
                 userId: req.user.userId
             }
         });
 
-        console.log(`✅ PaymentIntent creado: ${paymentIntent.id}`);
+        console.log(`✅ PaymentIntent creado: ${paymentIntent.id} - Monto: ${amount} centavos`);
 
         // Devolver client_secret al frontend
         res.json({
@@ -404,7 +404,7 @@ app.listen(PORT, () => {
 ╠════════════════════════════════════════╣
 ║   ✅ Servidor corriendo                ║
 ║   📡 Puerto: ${PORT}                        ║
-║   💳 Stripe: CONFIGURADO               ║
+║   💳 Stripe: CONFIGURADO (CORREGIDO)   ║
 ║   🚀 URL: https://agroapp-backend.onrender.com  ║
 ╚════════════════════════════════════════╝
     `);
