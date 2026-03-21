@@ -38,12 +38,20 @@ app.get("/", (req, res) => {
             orders: {
                 create: "POST /orders",
                 myOrders: "GET /orders/my",
-                cancel: "PATCH /orders/:id/cancel"
+                cancel: "PATCH /orders/:id/cancel",
+                pendingYappi: "POST /orders/pending-yappi",
+                confirmYappi: "POST /orders/:id/confirm-yappi"
             },
             vendor: {
                 byClient: "GET /vendor/orders/by-client",
                 byProduct: "GET /vendor/orders/by-product",
                 updateStatus: "PATCH /vendor/orders/:id/status"
+            },
+            driver: {
+                availableBlocks: "GET /driver/blocks/available",
+                myBlocks: "GET /driver/blocks/my",
+                earnings: "GET /driver/earnings",
+                takeBlock: "POST /driver/blocks/take"
             },
             payments: {
                 createIntent: "POST /payments/create-intent"
@@ -87,6 +95,20 @@ const authMiddleware = async (req, res, next) => {
     }
 };
 
+// Middleware para verificar que el usuario es repartidor
+const driverMiddleware = async (req, res, next) => {
+    const { data: user, error } = await supabase
+        .from("users")
+        .select("user_type")
+        .eq("id", req.user.userId)
+        .single();
+
+    if (error || user.user_type !== "driver") {
+        return res.status(403).json({ error: "No autorizado. Solo repartidores." });
+    }
+    next();
+};
+
 // ==================== AUTH ====================
 
 // Registro
@@ -102,7 +124,7 @@ app.post("/auth/register", async (req, res) => {
 
         const hashed = await bcrypt.hash(password, 10);
         const { data, error } = await supabase.from("users").insert({
-            full_name: name, email, password_hash: hashed, phone, address, role: "cliente"
+            full_name: name, email, password_hash: hashed, phone, address, role: "cliente", user_type: "cliente"
         }).select().single();
         if (error) throw error;
         console.log("✅ Usuario registrado:", data.id);
@@ -142,7 +164,7 @@ app.get("/auth/profile", authMiddleware, async (req, res) => {
     console.log("👤 GET /auth/profile");
     try {
         const { data, error } = await supabase
-            .from("users").select("id, full_name, email, phone, address, role")
+            .from("users").select("id, full_name, email, phone, address, role, user_type")
             .eq("id", req.user.userId).single();
         if (error) throw error;
         res.json(data);
@@ -312,6 +334,158 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
     }
 });
 
+// ==================== YAPPI PAYMENTS ====================
+
+// Función para generar código único de referencia
+function generateReferenceCode() {
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    return `${year}${month}${day}-${random}`;
+}
+
+// Crear pedido pendiente de pago con YAPPI
+app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
+    console.log("📦 POST /orders/pending-yappi");
+    const { items, deliveryAddress } = req.body;
+
+    if (!items || items.length === 0) {
+        return res.status(400).json({ error: "Carrito vacio" });
+    }
+
+    // Generar código único de referencia
+    const referenceCode = generateReferenceCode();
+
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const deliveryDate = tomorrow.toISOString().split("T")[0];
+
+    // Calcular total
+    let totalAmount = 0;
+    for (const item of items) {
+        const { data: product } = await supabase
+            .from("products")
+            .select("price")
+            .eq("id", item.productId)
+            .single();
+        if (product) {
+            totalAmount += product.price * item.quantity;
+        }
+    }
+
+    try {
+        // Crear pedido con estado "pending_payment"
+        const { data: order, error: orderError } = await supabase
+            .from("orders")
+            .insert({
+                user_id: req.user.userId,
+                payment_method: "yappi",
+                payment_status: "pending",
+                delivery_address: deliveryAddress || req.user.address,
+                delivery_date: deliveryDate,
+                total_amount: totalAmount,
+                reference_code: referenceCode,
+                status: "pending_payment",
+                created_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+
+        if (orderError) throw orderError;
+
+        // Agregar items
+        const orderItems = items.map(item => ({
+            order_id: order.id,
+            product_id: item.productId,
+            quantity: item.quantity,
+            unit_price: item.price
+        }));
+
+        const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
+        if (itemsError) throw itemsError;
+
+        console.log(`✅ Pedido pendiente YAPPI: ${order.id} - Código: ${referenceCode}`);
+
+        res.json({
+            orderId: order.id,
+            referenceCode: referenceCode,
+            totalAmount: totalAmount,
+            deliveryDate: deliveryDate
+        });
+
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Confirmar pago YAPPI (cliente confirma que pagó)
+app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
+    console.log(`💰 POST /orders/${req.params.id}/confirm-yappi`);
+    const { referenceCode } = req.body;
+
+    try {
+        // Buscar el pedido
+        const { data: order, error } = await supabase
+            .from("orders")
+            .select("*")
+            .eq("id", req.params.id)
+            .single();
+
+        if (error || !order) {
+            return res.status(404).json({ error: "Pedido no encontrado" });
+        }
+
+        // Verificar que el usuario sea el dueño del pedido
+        if (order.user_id !== req.user.userId) {
+            return res.status(403).json({ error: "No autorizado" });
+        }
+
+        // Verificar que el código coincida
+        if (order.reference_code !== referenceCode) {
+            return res.status(400).json({ error: "Código de referencia incorrecto" });
+        }
+
+        // Verificar que el pedido esté pendiente de pago
+        if (order.payment_status !== "pending") {
+            return res.json({
+                success: true,
+                message: "El pedido ya fue confirmado anteriormente"
+            });
+        }
+
+        // Actualizar estado del pedido
+        const { data: updated, error: updateError } = await supabase
+            .from("orders")
+            .update({
+                payment_status: "completed",
+                status: "confirmed",
+                payment_confirmed_at: new Date().toISOString(),
+                payment_confirmed_by: "client"
+            })
+            .eq("id", order.id)
+            .select()
+            .single();
+
+        if (updateError) throw updateError;
+
+        console.log(`✅ Pedido ${order.id} confirmado por el cliente`);
+
+        res.json({
+            success: true,
+            message: "Pedido confirmado. Gracias por tu compra.",
+            orderId: order.id
+        });
+
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ==================== VENDEDOR ====================
 
 app.get("/vendor/orders/by-client", authMiddleware, async (req, res) => {
@@ -360,6 +534,152 @@ app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
     }
 });
 
+// ==================== REPARTIDORES (DRIVER) ====================
+
+// Obtener bloques disponibles
+app.get("/driver/blocks/available", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log("🚚 GET /driver/blocks/available");
+    try {
+        const { data, error } = await supabase
+            .from("delivery_blocks")
+            .select("*")
+            .eq("status", "available")
+            .gte("block_date", new Date().toISOString().split("T")[0])
+            .order("block_date", { ascending: true })
+            .order("start_time", { ascending: true });
+
+        if (error) throw error;
+        res.json(data);
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Obtener mis bloques asignados
+app.get("/driver/blocks/my", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log("🚚 GET /driver/blocks/my");
+    try {
+        const { data, error } = await supabase
+            .from("driver_blocks")
+            .select("*, block:block_id(*)")
+            .eq("driver_id", req.user.userId)
+            .order("assigned_at", { ascending: false });
+
+        if (error) throw error;
+        res.json(data);
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Tomar un bloque
+app.post("/driver/blocks/take", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log("🚚 POST /driver/blocks/take");
+    const { block_id } = req.body;
+
+    if (!block_id) {
+        return res.status(400).json({ error: "block_id requerido" });
+    }
+
+    try {
+        // Verificar que el bloque existe y está disponible
+        const { data: block, error: blockError } = await supabase
+            .from("delivery_blocks")
+            .select("*")
+            .eq("id", block_id)
+            .eq("status", "available")
+            .single();
+
+        if (blockError || !block) {
+            return res.status(404).json({ error: "Bloque no disponible" });
+        }
+
+        // Crear asignación del bloque al driver
+        const { data: driverBlock, error: assignError } = await supabase
+            .from("driver_blocks")
+            .insert({
+                block_id: block_id,
+                driver_id: req.user.userId,
+                status: "assigned",
+                total_earned: block.driver_payment
+            })
+            .select()
+            .single();
+
+        if (assignError) throw assignError;
+
+        // Actualizar estado del bloque
+        await supabase
+            .from("delivery_blocks")
+            .update({ status: "assigned" })
+            .eq("id", block_id);
+
+        console.log(`✅ Driver ${req.user.userId} tomó bloque ${block_id}`);
+
+        res.json({ message: "Bloque tomado exitosamente", driverBlock });
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Obtener ganancias del repartidor
+app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log("💰 GET /driver/earnings");
+
+    try {
+        // Calcular inicio de semana (lunes)
+        const today = new Date();
+        const dayOfWeek = today.getDay();
+        const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+        const weekStart = new Date(today);
+        weekStart.setDate(today.getDate() - daysToMonday);
+        weekStart.setHours(0, 0, 0, 0);
+
+        // Obtener bloques completados esta semana
+        const { data: blocks, error } = await supabase
+            .from("driver_blocks")
+            .select("*, block:block_id(*)")
+            .eq("driver_id", req.user.userId)
+            .eq("status", "completed")
+            .gte("completed_at", weekStart.toISOString());
+
+        if (error) throw error;
+
+        let totalBlocks = 0;
+        let totalDeliveries = 0;
+        let totalAmount = 0;
+
+        for (const db of blocks) {
+            totalBlocks++;
+            totalDeliveries += db.block.total_orders;
+            totalAmount += db.total_earned;
+        }
+
+        const platformCommission = totalAmount * 0.10;
+        const driverNetAmount = totalAmount * 0.90;
+
+        // Calcular próximo viernes
+        const daysUntilFriday = (5 - today.getDay() + 7) % 7;
+        const nextFriday = new Date(today);
+        nextFriday.setDate(today.getDate() + daysUntilFriday);
+
+        res.json({
+            total_blocks: totalBlocks,
+            total_deliveries: totalDeliveries,
+            total_amount: totalAmount,
+            platform_commission: platformCommission,
+            driver_net_amount: driverNetAmount,
+            next_payment_date: nextFriday.toISOString().split("T")[0]
+        });
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ==================== STRIPE PAYMENTS ====================
 
 // Ruta para crear Payment Intent de Stripe
@@ -372,9 +692,8 @@ app.post('/payments/create-intent', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'Monto inválido' });
         }
 
-        // ✅ CORREGIDO: amount ya viene en centavos desde Android
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: amount,  // ← YA NO MULTIPLICAMOS POR 100
+            amount: amount,
             currency: currency,
             metadata: {
                 userId: req.user.userId
@@ -383,7 +702,6 @@ app.post('/payments/create-intent', authMiddleware, async (req, res) => {
 
         console.log(`✅ PaymentIntent creado: ${paymentIntent.id} - Monto: ${amount} centavos`);
 
-        // Devolver client_secret al frontend
         res.json({
             clientSecret: paymentIntent.client_secret
         });
@@ -404,7 +722,9 @@ app.listen(PORT, () => {
 ╠════════════════════════════════════════╣
 ║   ✅ Servidor corriendo                ║
 ║   📡 Puerto: ${PORT}                        ║
-║   💳 Stripe: CONFIGURADO (CORREGIDO)   ║
+║   💳 Stripe: CONFIGURADO               ║
+║   💰 YAPPI: CONFIGURADO                ║
+║   🚚 DRIVER: CONFIGURADO               ║
 ║   🚀 URL: https://agroapp-backend.onrender.com  ║
 ╚════════════════════════════════════════╝
     `);
