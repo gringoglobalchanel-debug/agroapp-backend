@@ -111,12 +111,16 @@ const driverMiddleware = async (req, res, next) => {
 
 // ==================== AUTH ====================
 
-// Registro
+// Registro - MODIFICADO para aceptar user_type
 app.post("/auth/register", async (req, res) => {
     console.log("📝 POST /auth/register");
-    const { full_name: name, email, password, phone, address } = req.body;
+    const { full_name: name, email, password, phone, address, user_type } = req.body;
     if (!name || !email || !password || !address)
         return res.status(400).json({ error: "Faltan campos" });
+
+    // Determinar el user_type (por defecto "cliente")
+    const userType = user_type === "driver" ? "driver" : "cliente";
+
     try {
         const { data: existing } = await supabase
             .from("users").select("id").eq("email", email).single();
@@ -124,10 +128,16 @@ app.post("/auth/register", async (req, res) => {
 
         const hashed = await bcrypt.hash(password, 10);
         const { data, error } = await supabase.from("users").insert({
-            full_name: name, email, password_hash: hashed, phone, address, role: "cliente", user_type: "cliente"
+            full_name: name,
+            email,
+            password_hash: hashed,
+            phone,
+            address,
+            role: "cliente",
+            user_type: userType
         }).select().single();
         if (error) throw error;
-        console.log("✅ Usuario registrado:", data.id);
+        console.log(`✅ Usuario registrado: ${data.id} - Tipo: ${userType}`);
         res.json({ message: "Usuario creado", userId: data.id });
     } catch (e) {
         console.error("❌ Error en registro:", e.message);
@@ -725,6 +735,7 @@ app.listen(PORT, () => {
 ║   💳 Stripe: CONFIGURADO               ║
 ║   💰 YAPPI: CONFIGURADO                ║
 ║   🚚 DRIVER: CONFIGURADO               ║
+║   👥 Registro con selección de rol     ║
 ║   🚀 URL: https://agroapp-backend.onrender.com  ║
 ╚════════════════════════════════════════╝
     `);
