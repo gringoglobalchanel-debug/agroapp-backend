@@ -111,14 +111,13 @@ const driverMiddleware = async (req, res, next) => {
 
 // ==================== AUTH ====================
 
-// Registro - MODIFICADO para aceptar user_type
+// Registro
 app.post("/auth/register", async (req, res) => {
     console.log("📝 POST /auth/register");
     const { full_name: name, email, password, phone, address, user_type } = req.body;
     if (!name || !email || !password || !address)
         return res.status(400).json({ error: "Faltan campos" });
 
-    // Determinar el user_type (por defecto "cliente")
     const userType = user_type === "driver" ? "driver" : "cliente";
 
     try {
@@ -145,7 +144,7 @@ app.post("/auth/register", async (req, res) => {
     }
 });
 
-// Login
+// Login - CORREGIDO: ahora devuelve user_type
 app.post("/auth/login", async (req, res) => {
     console.log("🔐 POST /auth/login");
     const { email, password } = req.body;
@@ -162,7 +161,14 @@ app.post("/auth/login", async (req, res) => {
             JWT_SECRET, { expiresIn: "7d" }
         );
         console.log("✅ Login exitoso:", user.email);
-        res.json({ token, userId: user.id, name: user.full_name, role: user.role, address: user.address });
+        res.json({
+            token,
+            userId: user.id,
+            name: user.full_name,
+            role: user.role,
+            address: user.address,
+            user_type: user.user_type || "cliente"  // ← NUEVO
+        });
     } catch (e) {
         console.error("❌ Error en login:", e.message);
         res.status(500).json({ error: e.message });
@@ -365,7 +371,6 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         return res.status(400).json({ error: "Carrito vacio" });
     }
 
-    // Generar código único de referencia
     const referenceCode = generateReferenceCode();
 
     const now = new Date();
@@ -373,7 +378,6 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
 
-    // Calcular total
     let totalAmount = 0;
     for (const item of items) {
         const { data: product } = await supabase
@@ -387,7 +391,6 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     }
 
     try {
-        // Crear pedido con estado "pending_payment"
         const { data: order, error: orderError } = await supabase
             .from("orders")
             .insert({
@@ -406,7 +409,6 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
 
         if (orderError) throw orderError;
 
-        // Agregar items
         const orderItems = items.map(item => ({
             order_id: order.id,
             product_id: item.productId,
@@ -432,13 +434,12 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     }
 });
 
-// Confirmar pago YAPPI (cliente confirma que pagó)
+// Confirmar pago YAPPI
 app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
     console.log(`💰 POST /orders/${req.params.id}/confirm-yappi`);
     const { referenceCode } = req.body;
 
     try {
-        // Buscar el pedido
         const { data: order, error } = await supabase
             .from("orders")
             .select("*")
@@ -449,17 +450,14 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
             return res.status(404).json({ error: "Pedido no encontrado" });
         }
 
-        // Verificar que el usuario sea el dueño del pedido
         if (order.user_id !== req.user.userId) {
             return res.status(403).json({ error: "No autorizado" });
         }
 
-        // Verificar que el código coincida
         if (order.reference_code !== referenceCode) {
             return res.status(400).json({ error: "Código de referencia incorrecto" });
         }
 
-        // Verificar que el pedido esté pendiente de pago
         if (order.payment_status !== "pending") {
             return res.json({
                 success: true,
@@ -467,7 +465,6 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
             });
         }
 
-        // Actualizar estado del pedido
         const { data: updated, error: updateError } = await supabase
             .from("orders")
             .update({
@@ -546,7 +543,6 @@ app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
 
 // ==================== REPARTIDORES (DRIVER) ====================
 
-// Obtener bloques disponibles
 app.get("/driver/blocks/available", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("🚚 GET /driver/blocks/available");
     try {
@@ -566,7 +562,6 @@ app.get("/driver/blocks/available", authMiddleware, driverMiddleware, async (req
     }
 });
 
-// Obtener mis bloques asignados
 app.get("/driver/blocks/my", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("🚚 GET /driver/blocks/my");
     try {
@@ -584,7 +579,6 @@ app.get("/driver/blocks/my", authMiddleware, driverMiddleware, async (req, res) 
     }
 });
 
-// Tomar un bloque
 app.post("/driver/blocks/take", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("🚚 POST /driver/blocks/take");
     const { block_id } = req.body;
@@ -594,7 +588,6 @@ app.post("/driver/blocks/take", authMiddleware, driverMiddleware, async (req, re
     }
 
     try {
-        // Verificar que el bloque existe y está disponible
         const { data: block, error: blockError } = await supabase
             .from("delivery_blocks")
             .select("*")
@@ -606,7 +599,6 @@ app.post("/driver/blocks/take", authMiddleware, driverMiddleware, async (req, re
             return res.status(404).json({ error: "Bloque no disponible" });
         }
 
-        // Crear asignación del bloque al driver
         const { data: driverBlock, error: assignError } = await supabase
             .from("driver_blocks")
             .insert({
@@ -620,7 +612,6 @@ app.post("/driver/blocks/take", authMiddleware, driverMiddleware, async (req, re
 
         if (assignError) throw assignError;
 
-        // Actualizar estado del bloque
         await supabase
             .from("delivery_blocks")
             .update({ status: "assigned" })
@@ -635,12 +626,10 @@ app.post("/driver/blocks/take", authMiddleware, driverMiddleware, async (req, re
     }
 });
 
-// Obtener ganancias del repartidor
 app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("💰 GET /driver/earnings");
 
     try {
-        // Calcular inicio de semana (lunes)
         const today = new Date();
         const dayOfWeek = today.getDay();
         const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
@@ -648,7 +637,6 @@ app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) =
         weekStart.setDate(today.getDate() - daysToMonday);
         weekStart.setHours(0, 0, 0, 0);
 
-        // Obtener bloques completados esta semana
         const { data: blocks, error } = await supabase
             .from("driver_blocks")
             .select("*, block:block_id(*)")
@@ -671,7 +659,6 @@ app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) =
         const platformCommission = totalAmount * 0.10;
         const driverNetAmount = totalAmount * 0.90;
 
-        // Calcular próximo viernes
         const daysUntilFriday = (5 - today.getDay() + 7) % 7;
         const nextFriday = new Date(today);
         nextFriday.setDate(today.getDate() + daysUntilFriday);
@@ -692,7 +679,6 @@ app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) =
 
 // ==================== STRIPE PAYMENTS ====================
 
-// Ruta para crear Payment Intent de Stripe
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     console.log("💳 POST /payments/create-intent");
     try {
