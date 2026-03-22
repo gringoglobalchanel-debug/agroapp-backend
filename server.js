@@ -275,15 +275,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
     if (!items || items.length === 0)
         return res.status(400).json({ error: "Carrito vacio" });
 
-    // COMENTADO PARA PRUEBAS
-    // const now = new Date();
-    // const hour = now.getHours();
-    // if (hour < 8 || hour >= 12)
-    //     return res.status(400).json({ error: "Solo se aceptan pedidos de 8am a 12pm" });
-
-    // ... resto del código
-});
-
+    const now = new Date();
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
