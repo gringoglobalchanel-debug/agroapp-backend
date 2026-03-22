@@ -337,13 +337,28 @@ app.post("/orders", authMiddleware, async (req, res) => {
             throw orderError;
         }
 
-        // ✅ FIX: aceptar product_id o productId, y price o unit_price
-        const orderItems = items.map(item => ({
-            order_id: order.id,
-            product_id: item.productId || item.product_id,
-            quantity: item.quantity,
-            unit_price: item.price || item.unit_price || 0
-        }));
+        // Construir items con unit_price desde los precios ya consultados en BD
+        const productPrices = {};
+        for (const item of items) {
+            const productId = item.productId || item.product_id;
+            const { data: product } = await supabase
+                .from("products")
+                .select("price")
+                .eq("id", productId)
+                .single();
+            if (product) productPrices[productId] = product.price;
+        }
+
+        const orderItems = items.map(item => {
+            const productId = item.productId || item.product_id;
+            const unitPrice = productPrices[productId] || item.price || item.unit_price || 0;
+            return {
+                order_id: order.id,
+                product_id: productId,
+                quantity: item.quantity,
+                unit_price: unitPrice
+            };
+        });
 
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) {
