@@ -824,7 +824,7 @@ app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, 
 
         if (updateError) throw updateError;
 
-        const totalPayment = pkg.current_size * 1.25;
+        const totalPayment = pkg.current_size * 2.50;
         const driverPayment = totalPayment * 0.90;
         const platformFee = totalPayment * 0.10;
 
@@ -915,7 +915,7 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
 
         for (const pkg of packages) {
             totalOrders += pkg.current_size;
-            totalAmount += pkg.current_size * 1.25;
+            totalAmount += pkg.current_size * 2.50;
         }
 
         const platformCommission = totalAmount * 0.10;
