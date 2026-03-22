@@ -273,7 +273,6 @@ app.post("/orders", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders");
     console.log("🔍 REQ BODY:", JSON.stringify(req.body, null, 2));
 
-    // Aceptar tanto camelCase como snake_case
     const {
         items,
         paymentMethod,
@@ -301,26 +300,20 @@ app.post("/orders", authMiddleware, async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
 
-    // Calcular total real consultando precios en BD
     let totalAmount = 0;
     for (const item of items) {
         const productId = item.productId || item.product_id;
-        console.log("Buscando precio para product_id:", productId, "tipo:", typeof productId);
-        const { data: product, error: productError } = await supabase
+        const { data: product } = await supabase
             .from("products")
             .select("price")
             .eq("id", productId)
             .single();
-        console.log("Producto:", JSON.stringify(product), "Error:", productError?.message);
         if (product) {
-            const subtotal = product.price * item.quantity;
-            console.log("Subtotal:", product.price, "x", item.quantity, "=", subtotal);
-            totalAmount += subtotal;
+            totalAmount += product.price * item.quantity;
         }
     }
     console.log("TOTAL FINAL:", totalAmount);
 
-    // ✅ CORRECCIÓN: Si es tarjeta, payment_status = "completed", si no, "pending"
     const paymentStatus = finalPaymentMethod === "card" ? "completed" : "pending";
 
     try {
@@ -328,19 +321,15 @@ app.post("/orders", authMiddleware, async (req, res) => {
             .from("orders").insert({
                 user_id: req.user.userId,
                 payment_method: finalPaymentMethod,
-                payment_status: paymentStatus,  // ← CORREGIDO
+                payment_status: paymentStatus,
                 delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
                 total_amount: totalAmount,
                 notes: notes || null
             }).select().single();
 
-        if (orderError) {
-            console.error("❌ orderError:", orderError);
-            throw orderError;
-        }
+        if (orderError) throw orderError;
 
-        // Construir items con unit_price desde los precios ya consultados en BD
         const productPrices = {};
         for (const item of items) {
             const productId = item.productId || item.product_id;
@@ -364,17 +353,13 @@ app.post("/orders", authMiddleware, async (req, res) => {
         });
 
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
-        if (itemsError) {
-            console.error("❌ itemsError:", itemsError);
-            throw itemsError;
-        }
+        if (itemsError) throw itemsError;
 
         console.log("✅ Pedido creado:", order.id);
         console.log("💰 payment_status:", paymentStatus);
         res.json({ message: "Pedido creado", orderId: order.id, deliveryDate });
     } catch (e) {
         console.error("❌ Error creando pedido:", e.message);
-        console.error("❌ Error stack:", e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -422,7 +407,6 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
 
 // ==================== YAPPI PAYMENTS ====================
 
-// Función para generar código único de referencia
 function generateReferenceCode() {
     const date = new Date();
     const year = date.getFullYear();
@@ -432,7 +416,6 @@ function generateReferenceCode() {
     return `${year}${month}${day}-${random}`;
 }
 
-// Crear pedido pendiente de pago con YAPPI
 app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders/pending-yappi");
     const { items, deliveryAddress, delivery_address } = req.body;
@@ -443,7 +426,6 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     }
 
     const referenceCode = generateReferenceCode();
-
     const now = new Date();
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -505,7 +487,6 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     }
 });
 
-// Confirmar pago YAPPI
 app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
     console.log(`💰 POST /orders/${req.params.id}/confirm-yappi`);
     const { referenceCode } = req.body;
@@ -750,7 +731,7 @@ app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) =
 
 // ==================== PAQUETES DINÁMICOS ====================
 
-// Obtener paquetes disponibles para repartidores
+// Obtener paquetes disponibles para repartidores (CON DATOS DEL CLIENTE)
 app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("📦 GET /driver/packages/available");
     try {
@@ -771,7 +752,11 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
                         delivery_address,
                         total_amount,
                         payment_method,
-                        created_at
+                        created_at,
+                        users (
+                            full_name,
+                            phone
+                        )
                     )
                 )
             `)
@@ -786,7 +771,16 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
             max_size: pkg.max_size,
             status: pkg.status,
             created_at: pkg.created_at,
-            orders: pkg.package_orders?.map(po => po.orders) || []
+            orders: pkg.package_orders?.map(po => ({
+                order_id: po.orders.id,
+                user_id: po.orders.user_id,
+                delivery_address: po.orders.delivery_address,
+                total_amount: po.orders.total_amount,
+                payment_method: po.orders.payment_method,
+                created_at: po.orders.created_at,
+                customer_name: po.orders.users?.full_name || "Cliente",
+                customer_phone: po.orders.users?.phone || "No disponible"
+            })) || []
         }));
 
         res.json(formattedPackages);
@@ -871,7 +865,11 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
                         delivery_address,
                         total_amount,
                         payment_method,
-                        created_at
+                        created_at,
+                        users (
+                            full_name,
+                            phone
+                        )
                     )
                 )
             `)
@@ -886,7 +884,16 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
             max_size: pkg.max_size,
             status: pkg.status,
             taken_at: pkg.taken_at,
-            orders: pkg.package_orders?.map(po => po.orders) || []
+            orders: pkg.package_orders?.map(po => ({
+                order_id: po.orders.id,
+                user_id: po.orders.user_id,
+                delivery_address: po.orders.delivery_address,
+                total_amount: po.orders.total_amount,
+                payment_method: po.orders.payment_method,
+                created_at: po.orders.created_at,
+                customer_name: po.orders.users?.full_name || "Cliente",
+                customer_phone: po.orders.users?.phone || "No disponible"
+            })) || []
         }));
 
         res.json(formattedPackages);
@@ -993,6 +1000,7 @@ app.listen(PORT, () => {
 ║   📦 PAQUETES DINÁMICOS: CONFIGURADO   ║
 ║   👥 Registro con selección de rol     ║
 ║   💳 Card: payment_status = completed  ║
+║   📞 Datos de cliente en paquetes      ║
 ║   🔍 DEBUG: logs activados             ║
 ║   🚀 URL: https://agroapp-backend.onrender.com  ║
 ╚════════════════════════════════════════╝
