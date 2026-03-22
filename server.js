@@ -759,7 +759,7 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
                 status,
                 created_at,
                 updated_at,
-                package_orders!package_orders_order_id_fkey (
+                package_orders!package_orders_package_id_fkey (
                     order_id,
                     orders!package_orders_order_id_fkey (
                         id,
@@ -872,7 +872,7 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
                 taken_by,
                 taken_at,
                 created_at,
-                package_orders!package_orders_order_id_fkey (
+                package_orders!package_orders_package_id_fkey (
                     order_id,
                     orders!package_orders_order_id_fkey (
                         id,
