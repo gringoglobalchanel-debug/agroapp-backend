@@ -51,7 +51,11 @@ app.get("/", (req, res) => {
                 availableBlocks: "GET /driver/blocks/available",
                 myBlocks: "GET /driver/blocks/my",
                 earnings: "GET /driver/earnings",
-                takeBlock: "POST /driver/blocks/take"
+                takeBlock: "POST /driver/blocks/take",
+                availablePackages: "GET /driver/packages/available",
+                takePackage: "POST /driver/packages/take",
+                myPackages: "GET /driver/packages/my",
+                earningsPackages: "GET /driver/earnings/packages"
             },
             payments: {
                 createIntent: "POST /payments/create-intent"
@@ -144,7 +148,7 @@ app.post("/auth/register", async (req, res) => {
     }
 });
 
-// Login - CORREGIDO: ahora devuelve user_type
+// Login
 app.post("/auth/login", async (req, res) => {
     console.log("🔐 POST /auth/login");
     const { email, password } = req.body;
@@ -167,7 +171,7 @@ app.post("/auth/login", async (req, res) => {
             name: user.full_name,
             role: user.role,
             address: user.address,
-            user_type: user.user_type || "cliente"  // ← NUEVO
+            user_type: user.user_type || "cliente"
         });
     } catch (e) {
         console.error("❌ Error en login:", e.message);
@@ -541,7 +545,7 @@ app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
     }
 });
 
-// ==================== REPARTIDORES (DRIVER) ====================
+// ==================== REPARTIDORES (DRIVER) - BLOQUES VIEJOS ====================
 
 app.get("/driver/blocks/available", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("🚚 GET /driver/blocks/available");
@@ -677,6 +681,204 @@ app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) =
     }
 });
 
+// ==================== PAQUETES DINÁMICOS ====================
+
+// Obtener paquetes disponibles para repartidores
+app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log("📦 GET /driver/packages/available");
+    try {
+        const { data, error } = await supabase
+            .from("dynamic_packages")
+            .select(`
+                id,
+                current_size,
+                max_size,
+                status,
+                created_at,
+                updated_at,
+                package_orders (
+                    order_id,
+                    orders (
+                        id,
+                        user_id,
+                        delivery_address,
+                        total_amount,
+                        payment_method,
+                        created_at
+                    )
+                )
+            `)
+            .eq("status", "available")
+            .order("created_at", { ascending: true });
+
+        if (error) throw error;
+
+        const formattedPackages = data.map(pkg => ({
+            id: pkg.id,
+            current_size: pkg.current_size,
+            max_size: pkg.max_size,
+            status: pkg.status,
+            created_at: pkg.created_at,
+            orders: pkg.package_orders?.map(po => po.orders) || []
+        }));
+
+        res.json(formattedPackages);
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Tomar un paquete completo
+app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log("🚚 POST /driver/packages/take");
+    const { package_id } = req.body;
+
+    if (!package_id) {
+        return res.status(400).json({ error: "package_id requerido" });
+    }
+
+    try {
+        const { data: pkg, error: pkgError } = await supabase
+            .from("dynamic_packages")
+            .select("*")
+            .eq("id", package_id)
+            .eq("status", "available")
+            .single();
+
+        if (pkgError || !pkg) {
+            return res.status(404).json({ error: "Paquete no disponible" });
+        }
+
+        const { data: updated, error: updateError } = await supabase
+            .from("dynamic_packages")
+            .update({
+                status: "taken",
+                taken_by: req.user.userId,
+                taken_at: new Date().toISOString()
+            })
+            .eq("id", package_id)
+            .select()
+            .single();
+
+        if (updateError) throw updateError;
+
+        const totalPayment = pkg.current_size * 1.25;
+        const driverPayment = totalPayment * 0.90;
+        const platformFee = totalPayment * 0.10;
+
+        console.log(`✅ Driver ${req.user.userId} tomó paquete ${package_id} con ${pkg.current_size} pedidos`);
+
+        res.json({
+            message: "Paquete tomado exitosamente",
+            package: updated,
+            driver_payment: driverPayment,
+            platform_fee: platformFee,
+            total_orders: pkg.current_size
+        });
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Obtener mis paquetes tomados
+app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log("🚚 GET /driver/packages/my");
+    try {
+        const { data, error } = await supabase
+            .from("dynamic_packages")
+            .select(`
+                id,
+                current_size,
+                max_size,
+                status,
+                taken_by,
+                taken_at,
+                created_at,
+                package_orders (
+                    order_id,
+                    orders (
+                        id,
+                        user_id,
+                        delivery_address,
+                        total_amount,
+                        payment_method,
+                        created_at
+                    )
+                )
+            `)
+            .eq("taken_by", req.user.userId)
+            .order("taken_at", { ascending: false });
+
+        if (error) throw error;
+
+        const formattedPackages = data.map(pkg => ({
+            id: pkg.id,
+            current_size: pkg.current_size,
+            max_size: pkg.max_size,
+            status: pkg.status,
+            taken_at: pkg.taken_at,
+            orders: pkg.package_orders?.map(po => po.orders) || []
+        }));
+
+        res.json(formattedPackages);
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Obtener ganancias del repartidor por paquetes
+app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log("💰 GET /driver/earnings/packages");
+
+    try {
+        const today = new Date();
+        const dayOfWeek = today.getDay();
+        const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+        const weekStart = new Date(today);
+        weekStart.setDate(today.getDate() - daysToMonday);
+        weekStart.setHours(0, 0, 0, 0);
+
+        const { data: packages, error } = await supabase
+            .from("dynamic_packages")
+            .select("current_size, taken_at")
+            .eq("taken_by", req.user.userId)
+            .eq("status", "taken")
+            .gte("taken_at", weekStart.toISOString());
+
+        if (error) throw error;
+
+        let totalOrders = 0;
+        let totalAmount = 0;
+
+        for (const pkg of packages) {
+            totalOrders += pkg.current_size;
+            totalAmount += pkg.current_size * 1.25;
+        }
+
+        const platformCommission = totalAmount * 0.10;
+        const driverNetAmount = totalAmount * 0.90;
+
+        const daysUntilFriday = (5 - today.getDay() + 7) % 7;
+        const nextFriday = new Date(today);
+        nextFriday.setDate(today.getDate() + daysUntilFriday);
+
+        res.json({
+            total_packages: packages.length,
+            total_orders: totalOrders,
+            total_amount: totalAmount,
+            platform_commission: platformCommission,
+            driver_net_amount: driverNetAmount,
+            next_payment_date: nextFriday.toISOString().split("T")[0]
+        });
+    } catch (e) {
+        console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ==================== STRIPE PAYMENTS ====================
 
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
@@ -721,6 +923,7 @@ app.listen(PORT, () => {
 ║   💳 Stripe: CONFIGURADO               ║
 ║   💰 YAPPI: CONFIGURADO                ║
 ║   🚚 DRIVER: CONFIGURADO               ║
+║   📦 PAQUETES DINÁMICOS: CONFIGURADO   ║
 ║   👥 Registro con selección de rol     ║
 ║   🚀 URL: https://agroapp-backend.onrender.com  ║
 ╚════════════════════════════════════════╝
