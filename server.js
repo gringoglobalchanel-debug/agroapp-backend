@@ -301,15 +301,28 @@ app.post("/orders", authMiddleware, async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
 
+    // ✅ FIX: calcular total real consultando precios en BD
+    let totalAmount = 0;
+    for (const item of items) {
+        const { data: product } = await supabase
+            .from("products")
+            .select("price")
+            .eq("id", item.productId || item.product_id)
+            .single();
+        if (product) {
+            totalAmount += product.price * item.quantity;
+        }
+    }
+
     try {
         const { data: order, error: orderError } = await supabase
             .from("orders").insert({
                 user_id: req.user.userId,
                 payment_method: finalPaymentMethod,
-                payment_status: "completed",   // ✅ FIX: pago con card ya fue procesado por Stripe
+                payment_status: "completed",
                 delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
-                total_amount: 0,
+                total_amount: totalAmount,  // ✅ ya no es 0
                 notes: notes || null
             }).select().single();
 
