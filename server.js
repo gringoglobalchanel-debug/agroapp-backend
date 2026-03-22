@@ -750,52 +750,37 @@ app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) =
 app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("📦 GET /driver/packages/available");
     try {
-        const { data, error } = await supabase
+        const { data: packages, error } = await supabase
             .from("dynamic_packages")
-            .select(`
-                id,
-                current_size,
-                max_size,
-                status,
-                created_at,
-                updated_at,
-                package_orders!package_orders_package_id_fkey (
-                    order_id,
-                    orders!package_orders_order_id_fkey (
-                        id,
-                        user_id,
-                        delivery_address,
-                        total_amount,
-                        payment_method,
-                        created_at,
-                        users!orders_user_id_fkey (
-                            full_name,
-                            phone
-                        )
-                    )
-                )
-            `)
+            .select("id, current_size, max_size, status, created_at, updated_at")
             .eq("status", "available")
             .order("created_at", { ascending: true });
 
         if (error) throw error;
 
-        const formattedPackages = data.map(pkg => ({
-            id: pkg.id,
-            current_size: pkg.current_size,
-            max_size: pkg.max_size,
-            status: pkg.status,
-            created_at: pkg.created_at,
-            orders: pkg.package_orders?.map(po => ({
-                order_id: po.orders?.id,
-                user_id: po.orders?.user_id,
-                delivery_address: po.orders?.delivery_address,
-                total_amount: po.orders?.total_amount,
-                payment_method: po.orders?.payment_method,
-                created_at: po.orders?.created_at,
-                customer_name: po.orders?.users?.full_name || "Cliente",
-                customer_phone: po.orders?.users?.phone || "No disponible"
-            })) || []
+        const formattedPackages = await Promise.all(packages.map(async (pkg) => {
+            const { data: pkgOrders } = await supabase
+                .from("package_orders")
+                .select("order_id, orders(id, user_id, delivery_address, total_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
+                .eq("package_id", pkg.id);
+
+            return {
+                id: pkg.id,
+                current_size: pkg.current_size,
+                max_size: pkg.max_size,
+                status: pkg.status,
+                created_at: pkg.created_at,
+                orders: pkgOrders?.map(po => ({
+                    order_id: po.orders?.id,
+                    user_id: po.orders?.user_id,
+                    delivery_address: po.orders?.delivery_address,
+                    total_amount: po.orders?.total_amount,
+                    payment_method: po.orders?.payment_method,
+                    created_at: po.orders?.created_at,
+                    customer_name: po.orders?.users?.full_name || "Cliente",
+                    customer_phone: po.orders?.users?.phone || "No disponible"
+                })) || []
+            };
         }));
 
         res.json(formattedPackages);
@@ -862,53 +847,39 @@ app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, 
 app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("🚚 GET /driver/packages/my");
     try {
-        const { data, error } = await supabase
+        // Paso 1: obtener mis paquetes
+        const { data: packages, error } = await supabase
             .from("dynamic_packages")
-            .select(`
-                id,
-                current_size,
-                max_size,
-                status,
-                taken_by,
-                taken_at,
-                created_at,
-                package_orders!package_orders_package_id_fkey (
-                    order_id,
-                    orders!package_orders_order_id_fkey (
-                        id,
-                        user_id,
-                        delivery_address,
-                        total_amount,
-                        payment_method,
-                        created_at,
-                        users!orders_user_id_fkey (
-                            full_name,
-                            phone
-                        )
-                    )
-                )
-            `)
+            .select("id, current_size, max_size, status, taken_by, taken_at, created_at")
             .eq("taken_by", req.user.userId)
             .order("taken_at", { ascending: false });
 
         if (error) throw error;
 
-        const formattedPackages = data.map(pkg => ({
-            id: pkg.id,
-            current_size: pkg.current_size,
-            max_size: pkg.max_size,
-            status: pkg.status,
-            taken_at: pkg.taken_at,
-            orders: pkg.package_orders?.map(po => ({
-                order_id: po.orders?.id,
-                user_id: po.orders?.user_id,
-                delivery_address: po.orders?.delivery_address,
-                total_amount: po.orders?.total_amount,
-                payment_method: po.orders?.payment_method,
-                created_at: po.orders?.created_at,
-                customer_name: po.orders?.users?.full_name || "Cliente",
-                customer_phone: po.orders?.users?.phone || "No disponible"
-            })) || []
+        // Paso 2: para cada paquete obtener sus pedidos con datos del cliente
+        const formattedPackages = await Promise.all(packages.map(async (pkg) => {
+            const { data: pkgOrders } = await supabase
+                .from("package_orders")
+                .select("order_id, orders(id, user_id, delivery_address, total_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
+                .eq("package_id", pkg.id);
+
+            return {
+                id: pkg.id,
+                current_size: pkg.current_size,
+                max_size: pkg.max_size,
+                status: pkg.status,
+                taken_at: pkg.taken_at,
+                orders: pkgOrders?.map(po => ({
+                    order_id: po.orders?.id,
+                    user_id: po.orders?.user_id,
+                    delivery_address: po.orders?.delivery_address,
+                    total_amount: po.orders?.total_amount,
+                    payment_method: po.orders?.payment_method,
+                    created_at: po.orders?.created_at,
+                    customer_name: po.orders?.users?.full_name || "Cliente",
+                    customer_phone: po.orders?.users?.phone || "No disponible"
+                })) || []
+            };
         }));
 
         res.json(formattedPackages);
