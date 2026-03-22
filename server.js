@@ -273,14 +273,28 @@ app.post("/orders", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders");
     console.log("🔍 REQ BODY:", JSON.stringify(req.body, null, 2));
 
-    const { items, paymentMethod, deliveryAddress } = req.body;
+    // ✅ FIX: aceptar tanto camelCase como snake_case
+    const {
+        items,
+        paymentMethod,
+        payment_method,
+        deliveryAddress,
+        delivery_address,
+        notes
+    } = req.body;
 
-    console.log("🔍 paymentMethod VALUE:", paymentMethod);
-    console.log("🔍 paymentMethod TYPE:", typeof paymentMethod);
+    const finalPaymentMethod = paymentMethod || payment_method;
+    const finalDeliveryAddress = deliveryAddress || delivery_address;
+
+    console.log("🔍 paymentMethod VALUE:", finalPaymentMethod);
+    console.log("🔍 paymentMethod TYPE:", typeof finalPaymentMethod);
     console.log("🔍 items length:", items?.length);
 
     if (!items || items.length === 0)
         return res.status(400).json({ error: "Carrito vacio" });
+
+    if (!finalPaymentMethod)
+        return res.status(400).json({ error: "payment_method es requerido" });
 
     const now = new Date();
     const tomorrow = new Date(now);
@@ -291,21 +305,24 @@ app.post("/orders", authMiddleware, async (req, res) => {
         const { data: order, error: orderError } = await supabase
             .from("orders").insert({
                 user_id: req.user.userId,
-                payment_method: paymentMethod,
-                delivery_address: deliveryAddress || req.user.address,
+                payment_method: finalPaymentMethod,
+                delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
-                total_amount: 0
+                total_amount: 0,
+                notes: notes || null
             }).select().single();
+
         if (orderError) {
             console.error("❌ orderError:", orderError);
             throw orderError;
         }
 
+        // ✅ FIX: aceptar product_id o productId, y price o unit_price
         const orderItems = items.map(item => ({
             order_id: order.id,
-            product_id: item.productId,
+            product_id: item.productId || item.product_id,
             quantity: item.quantity,
-            unit_price: item.price
+            unit_price: item.price || item.unit_price || 0
         }));
 
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
@@ -379,7 +396,8 @@ function generateReferenceCode() {
 // Crear pedido pendiente de pago con YAPPI
 app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders/pending-yappi");
-    const { items, deliveryAddress } = req.body;
+    const { items, deliveryAddress, delivery_address } = req.body;
+    const finalDeliveryAddress = deliveryAddress || delivery_address;
 
     if (!items || items.length === 0) {
         return res.status(400).json({ error: "Carrito vacio" });
@@ -397,7 +415,7 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         const { data: product } = await supabase
             .from("products")
             .select("price")
-            .eq("id", item.productId)
+            .eq("id", item.productId || item.product_id)
             .single();
         if (product) {
             totalAmount += product.price * item.quantity;
@@ -411,7 +429,7 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
                 user_id: req.user.userId,
                 payment_method: "yappi",
                 payment_status: "pending",
-                delivery_address: deliveryAddress || req.user.address,
+                delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
                 total_amount: totalAmount,
                 reference_code: referenceCode,
@@ -425,9 +443,9 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
 
         const orderItems = items.map(item => ({
             order_id: order.id,
-            product_id: item.productId,
+            product_id: item.productId || item.product_id,
             quantity: item.quantity,
-            unit_price: item.price
+            unit_price: item.price || item.unit_price || 0
         }));
 
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
