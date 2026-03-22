@@ -306,6 +306,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
             .from("orders").insert({
                 user_id: req.user.userId,
                 payment_method: finalPaymentMethod,
+                payment_status: "completed",   // ✅ FIX: pago con card ya fue procesado por Stripe
                 delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
                 total_amount: 0,
