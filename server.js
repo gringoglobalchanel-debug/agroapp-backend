@@ -301,18 +301,24 @@ app.post("/orders", authMiddleware, async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
 
-    // ✅ FIX: calcular total real consultando precios en BD
+    // Calcular total real consultando precios en BD
     let totalAmount = 0;
     for (const item of items) {
-        const { data: product } = await supabase
+        const productId = item.productId || item.product_id;
+        console.log("Buscando precio para product_id:", productId, "tipo:", typeof productId);
+        const { data: product, error: productError } = await supabase
             .from("products")
             .select("price")
-            .eq("id", item.productId || item.product_id)
+            .eq("id", productId)
             .single();
+        console.log("Producto:", JSON.stringify(product), "Error:", productError?.message);
         if (product) {
-            totalAmount += product.price * item.quantity;
+            const subtotal = product.price * item.quantity;
+            console.log("Subtotal:", product.price, "x", item.quantity, "=", subtotal);
+            totalAmount += subtotal;
         }
     }
+    console.log("TOTAL FINAL:", totalAmount);
 
     try {
         const { data: order, error: orderError } = await supabase
@@ -322,7 +328,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
                 payment_status: "completed",
                 delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
-                total_amount: totalAmount,  // ✅ ya no es 0
+                total_amount: totalAmount,
                 notes: notes || null
             }).select().single();
 
