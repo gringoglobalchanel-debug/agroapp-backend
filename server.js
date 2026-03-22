@@ -273,7 +273,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders");
     console.log("🔍 REQ BODY:", JSON.stringify(req.body, null, 2));
 
-    // ✅ FIX: aceptar tanto camelCase como snake_case
+    // Aceptar tanto camelCase como snake_case
     const {
         items,
         paymentMethod,
@@ -320,12 +320,15 @@ app.post("/orders", authMiddleware, async (req, res) => {
     }
     console.log("TOTAL FINAL:", totalAmount);
 
+    // ✅ CORRECCIÓN: Si es tarjeta, payment_status = "completed", si no, "pending"
+    const paymentStatus = finalPaymentMethod === "card" ? "completed" : "pending";
+
     try {
         const { data: order, error: orderError } = await supabase
             .from("orders").insert({
                 user_id: req.user.userId,
                 payment_method: finalPaymentMethod,
-                payment_status: "completed",
+                payment_status: paymentStatus,  // ← CORREGIDO
                 delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
                 total_amount: totalAmount,
@@ -367,6 +370,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
         }
 
         console.log("✅ Pedido creado:", order.id);
+        console.log("💰 payment_status:", paymentStatus);
         res.json({ message: "Pedido creado", orderId: order.id, deliveryDate });
     } catch (e) {
         console.error("❌ Error creando pedido:", e.message);
@@ -988,6 +992,7 @@ app.listen(PORT, () => {
 ║   🚚 DRIVER: CONFIGURADO               ║
 ║   📦 PAQUETES DINÁMICOS: CONFIGURADO   ║
 ║   👥 Registro con selección de rol     ║
+║   💳 Card: payment_status = completed  ║
 ║   🔍 DEBUG: logs activados             ║
 ║   🚀 URL: https://agroapp-backend.onrender.com  ║
 ╚════════════════════════════════════════╝
