@@ -271,7 +271,14 @@ app.get("/products", async (req, res) => {
 
 app.post("/orders", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders");
+    console.log("🔍 REQ BODY:", JSON.stringify(req.body, null, 2));
+
     const { items, paymentMethod, deliveryAddress } = req.body;
+
+    console.log("🔍 paymentMethod VALUE:", paymentMethod);
+    console.log("🔍 paymentMethod TYPE:", typeof paymentMethod);
+    console.log("🔍 items length:", items?.length);
+
     if (!items || items.length === 0)
         return res.status(400).json({ error: "Carrito vacio" });
 
@@ -289,7 +296,10 @@ app.post("/orders", authMiddleware, async (req, res) => {
                 delivery_date: deliveryDate,
                 total_amount: 0
             }).select().single();
-        if (orderError) throw orderError;
+        if (orderError) {
+            console.error("❌ orderError:", orderError);
+            throw orderError;
+        }
 
         const orderItems = items.map(item => ({
             order_id: order.id,
@@ -299,12 +309,16 @@ app.post("/orders", authMiddleware, async (req, res) => {
         }));
 
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
-        if (itemsError) throw itemsError;
+        if (itemsError) {
+            console.error("❌ itemsError:", itemsError);
+            throw itemsError;
+        }
 
         console.log("✅ Pedido creado:", order.id);
         res.json({ message: "Pedido creado", orderId: order.id, deliveryDate });
     } catch (e) {
         console.error("❌ Error creando pedido:", e.message);
+        console.error("❌ Error stack:", e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -921,6 +935,7 @@ app.listen(PORT, () => {
 ║   🚚 DRIVER: CONFIGURADO               ║
 ║   📦 PAQUETES DINÁMICOS: CONFIGURADO   ║
 ║   👥 Registro con selección de rol     ║
+║   🔍 DEBUG: logs activados             ║
 ║   🚀 URL: https://agroapp-backend.onrender.com  ║
 ╚════════════════════════════════════════╝
     `);
