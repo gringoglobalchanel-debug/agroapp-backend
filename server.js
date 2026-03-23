@@ -55,7 +55,8 @@ app.get("/", (req, res) => {
                 availablePackages: "GET /driver/packages/available",
                 takePackage: "POST /driver/packages/take",
                 myPackages: "GET /driver/packages/my",
-                earningsPackages: "GET /driver/earnings/packages"
+                earningsPackages: "GET /driver/earnings/packages",
+                updateOrderStatus: "PATCH /driver/orders/:orderId/status"
             },
             payments: {
                 createIntent: "POST /payments/create-intent"
@@ -273,7 +274,6 @@ app.post("/orders", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders");
     console.log("🔍 REQ BODY:", JSON.stringify(req.body, null, 2));
 
-    // ✅ FIX: aceptar tanto camelCase como snake_case
     const {
         items,
         paymentMethod,
@@ -301,7 +301,6 @@ app.post("/orders", authMiddleware, async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
 
-    // Calcular total real consultando precios en BD
     let totalAmount = 0;
     for (const item of items) {
         const productId = item.productId || item.product_id;
@@ -337,7 +336,6 @@ app.post("/orders", authMiddleware, async (req, res) => {
             throw orderError;
         }
 
-        // Construir items con unit_price desde los precios ya consultados en BD
         const productPrices = {};
         for (const item of items) {
             const productId = item.productId || item.product_id;
@@ -418,7 +416,6 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
 
 // ==================== YAPPI PAYMENTS ====================
 
-// Función para generar código único de referencia
 function generateReferenceCode() {
     const date = new Date();
     const year = date.getFullYear();
@@ -428,7 +425,6 @@ function generateReferenceCode() {
     return `${year}${month}${day}-${random}`;
 }
 
-// Crear pedido pendiente de pago con YAPPI
 app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders/pending-yappi");
     const { items, deliveryAddress, delivery_address } = req.body;
@@ -501,7 +497,6 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     }
 });
 
-// Confirmar pago YAPPI
 app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
     console.log(`💰 POST /orders/${req.params.id}/confirm-yappi`);
     const { referenceCode } = req.body;
@@ -746,7 +741,6 @@ app.get("/driver/earnings", authMiddleware, driverMiddleware, async (req, res) =
 
 // ==================== PAQUETES DINÁMICOS ====================
 
-// Obtener paquetes disponibles para repartidores
 app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("📦 GET /driver/packages/available");
     try {
@@ -790,7 +784,6 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
     }
 });
 
-// Tomar un paquete completo
 app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("🚚 POST /driver/packages/take");
     const { package_id } = req.body;
@@ -843,11 +836,9 @@ app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, 
     }
 });
 
-// Obtener mis paquetes tomados
 app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("🚚 GET /driver/packages/my");
     try {
-        // Paso 1: obtener mis paquetes
         const { data: packages, error } = await supabase
             .from("dynamic_packages")
             .select("id, current_size, max_size, status, taken_by, taken_at, created_at")
@@ -856,7 +847,6 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
 
         if (error) throw error;
 
-        // Paso 2: para cada paquete obtener sus pedidos con datos del cliente
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
             const { data: pkgOrders } = await supabase
                 .from("package_orders")
@@ -889,7 +879,6 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
     }
 });
 
-// Obtener ganancias del repartidor por paquetes
 app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (req, res) => {
     console.log("💰 GET /driver/earnings/packages");
 
@@ -935,6 +924,72 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
         });
     } catch (e) {
         console.error("❌ Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ==================== DRIVER - ACTUALIZAR ESTADO DE PEDIDO ====================
+
+app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, async (req, res) => {
+    console.log(`🚚 PATCH /driver/orders/${req.params.orderId}/status`);
+    const { orderId } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+        return res.status(400).json({ error: "status es requerido" });
+    }
+
+    try {
+        const { data: order, error: orderError } = await supabase
+            .from("orders")
+            .select("id, dynamic_package_id, driver_id, status")
+            .eq("id", orderId)
+            .single();
+
+        if (orderError || !order) {
+            return res.status(404).json({ error: "Pedido no encontrado" });
+        }
+
+        if (!order.dynamic_package_id) {
+            return res.status(400).json({ error: "Este pedido no está asignado a ningún paquete" });
+        }
+
+        const { data: pkg, error: pkgError } = await supabase
+            .from("dynamic_packages")
+            .select("id, taken_by")
+            .eq("id", order.dynamic_package_id)
+            .eq("taken_by", req.user.userId)
+            .single();
+
+        if (pkgError || !pkg) {
+            return res.status(403).json({ error: "No tienes este pedido asignado" });
+        }
+
+        const { data: updatedOrder, error: updateError } = await supabase
+            .from("orders")
+            .update({
+                status: status,
+                updated_at: new Date().toISOString()
+            })
+            .eq("id", orderId)
+            .select()
+            .single();
+
+        if (updateError) {
+            console.error("❌ Error actualizando pedido:", updateError);
+            return res.status(400).json({ error: "Error al actualizar el pedido" });
+        }
+
+        console.log(`✅ Pedido ${orderId} actualizado a "${status}" por driver ${req.user.userId}`);
+
+        res.json({
+            success: true,
+            message: "Estado del pedido actualizado",
+            order: updatedOrder
+        });
+
+    } catch (e) {
+        console.error("❌ Error en /driver/orders/:orderId/status:", e.message);
         res.status(500).json({ error: e.message });
     }
 });
