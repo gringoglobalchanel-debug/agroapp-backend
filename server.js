@@ -328,7 +328,8 @@ app.post("/orders", authMiddleware, async (req, res) => {
                 delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
                 total_amount: totalAmount,
-                notes: notes || null
+                notes: notes || null,
+                status: "pending"
             }).select().single();
 
         if (orderError) {
@@ -965,6 +966,7 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
             return res.status(403).json({ error: "No tienes este pedido asignado" });
         }
 
+        // Actualizar estado del pedido
         const { data: updatedOrder, error: updateError } = await supabase
             .from("orders")
             .update({
@@ -981,6 +983,43 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
         }
 
         console.log(`✅ Pedido ${orderId} actualizado a "${status}" por driver ${req.user.userId}`);
+
+        // ELIMINAR LA RELACIÓN DEL PEDIDO CON EL PAQUETE
+        const { error: deleteRelationError } = await supabase
+            .from("package_orders")
+            .delete()
+            .eq("order_id", orderId);
+
+        if (deleteRelationError) {
+            console.error("❌ Error eliminando relación:", deleteRelationError);
+        } else {
+            console.log(`✅ Relación eliminada para pedido ${orderId}`);
+        }
+
+        // VERIFICAR SI EL PAQUETE QUEDÓ VACÍO
+        const { data: remainingOrders, error: remainingError } = await supabase
+            .from("package_orders")
+            .select("order_id")
+            .eq("package_id", order.dynamic_package_id);
+
+        if (remainingError) {
+            console.error("❌ Error verificando pedidos restantes:", remainingError);
+        } else if (remainingOrders && remainingOrders.length === 0) {
+            const { error: updatePackageError } = await supabase
+                .from("dynamic_packages")
+                .update({
+                    status: "available",
+                    taken_by: null,
+                    taken_at: null
+                })
+                .eq("id", order.dynamic_package_id);
+
+            if (updatePackageError) {
+                console.error("❌ Error actualizando paquete:", updatePackageError);
+            } else {
+                console.log(`✅ Paquete ${order.dynamic_package_id} vacío, disponible nuevamente`);
+            }
+        }
 
         res.json({
             success: true,
