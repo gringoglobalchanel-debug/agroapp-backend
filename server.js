@@ -280,14 +280,17 @@ app.post("/orders", authMiddleware, async (req, res) => {
         payment_method,
         deliveryAddress,
         delivery_address,
-        notes
+        notes,
+        tip_amount
     } = req.body;
 
     const finalPaymentMethod = paymentMethod || payment_method;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
+    const finalTipAmount = tip_amount || 0;
 
     console.log("🔍 paymentMethod VALUE:", finalPaymentMethod);
     console.log("🔍 paymentMethod TYPE:", typeof finalPaymentMethod);
+    console.log("🔍 tip_amount:", finalTipAmount);
     console.log("🔍 items length:", items?.length);
 
     if (!items || items.length === 0)
@@ -328,6 +331,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
                 delivery_address: finalDeliveryAddress || req.user.address,
                 delivery_date: deliveryDate,
                 total_amount: totalAmount,
+                tip_amount: finalTipAmount,
                 notes: notes || null,
                 status: "pending"
             }).select().single();
@@ -756,7 +760,7 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
             const { data: pkgOrders } = await supabase
                 .from("package_orders")
-                .select("order_id, orders(id, user_id, delivery_address, total_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
+                .select("order_id, orders(id, user_id, delivery_address, total_amount, tip_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
                 .eq("package_id", pkg.id);
 
             return {
@@ -770,6 +774,7 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
                     user_id: po.orders?.user_id,
                     delivery_address: po.orders?.delivery_address,
                     total_amount: po.orders?.total_amount,
+                    tip_amount: po.orders?.tip_amount || 0,
                     payment_method: po.orders?.payment_method,
                     created_at: po.orders?.created_at,
                     customer_name: po.orders?.users?.full_name || "Cliente",
@@ -851,7 +856,7 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
             const { data: pkgOrders } = await supabase
                 .from("package_orders")
-                .select("order_id, orders(id, user_id, delivery_address, total_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
+                .select("order_id, orders(id, user_id, delivery_address, total_amount, tip_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
                 .eq("package_id", pkg.id);
 
             return {
@@ -865,6 +870,7 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
                     user_id: po.orders?.user_id,
                     delivery_address: po.orders?.delivery_address,
                     total_amount: po.orders?.total_amount,
+                    tip_amount: po.orders?.tip_amount || 0,
                     payment_method: po.orders?.payment_method,
                     created_at: po.orders?.created_at,
                     customer_name: po.orders?.users?.full_name || "Cliente",
