@@ -893,55 +893,40 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
 
         console.log(`📅 Semana desde: ${weekStart.toISOString()}`);
 
-        // Obtener los paquetes tomados por el driver en la semana
-        const { data: packages, error } = await supabase
-            .from("dynamic_packages")
-            .select("id, current_size, taken_at")
-            .eq("taken_by", req.user.userId)
-            .eq("status", "taken")
-            .gte("taken_at", weekStart.toISOString());
+        // Obtener TODOS los pedidos entregados por el driver en la semana
+        // Buscar en package_orders los pedidos que el driver ha entregado
+        const { data: deliveredOrders, error } = await supabase
+            .from("orders")
+            .select("id, tip_amount, status, updated_at, dynamic_package_id")
+            .eq("status", "completed")
+            .gte("updated_at", weekStart.toISOString());
 
         if (error) throw error;
 
-        console.log(`📦 Paquetes encontrados: ${packages?.length || 0}`);
+        console.log(`📦 Pedidos entregados encontrados: ${deliveredOrders?.length || 0}`);
 
         let totalOrders = 0;
         let totalBasePayment = 0;
         let totalTips = 0;
 
-        // Para cada paquete, obtener los pedidos y sumar sus propinas SOLO DE PEDIDOS ENTREGADOS
-        for (const pkg of packages) {
-            console.log(`  📦 Procesando paquete: ${pkg.id} (${pkg.current_size} pedidos)`);
-
-            // Obtener los pedidos del paquete
-            const { data: packageOrders } = await supabase
-                .from("package_orders")
-                .select("order_id")
-                .eq("package_id", pkg.id);
-
-            if (packageOrders && packageOrders.length > 0) {
-                for (const po of packageOrders) {
-                    // Obtener el pedido y verificar si está entregado
-                    const { data: order } = await supabase
-                        .from("orders")
-                        .select("tip_amount, status")
-                        .eq("id", po.order_id)
+        // Para cada pedido entregado, verificar que pertenece a un paquete que el driver tomó
+        if (deliveredOrders && deliveredOrders.length > 0) {
+            for (const order of deliveredOrders) {
+                // Verificar si el pedido pertenece a un paquete que este driver tomó
+                if (order.dynamic_package_id) {
+                    const { data: pkg } = await supabase
+                        .from("dynamic_packages")
+                        .select("taken_by")
+                        .eq("id", order.dynamic_package_id)
                         .single();
 
-                    console.log(`    📝 Pedido: ${po.order_id} | status: ${order?.status} | tip: ${order?.tip_amount || 0}`);
-
-                    // SOLO contar pedidos entregados (status = 'completed')
-                    if (order && order.status === 'completed') {
+                    if (pkg && pkg.taken_by === req.user.userId) {
                         totalOrders++;
                         totalBasePayment += 2.50;
                         if (order.tip_amount && order.tip_amount > 0) {
                             totalTips += order.tip_amount;
-                            console.log(`      ✅ Propina sumada: $${order.tip_amount} (Total propinas: $${totalTips})`);
-                        } else {
-                            console.log(`      ℹ️ Sin propina`);
+                            console.log(`  ✅ Pedido ${order.id} - Propina: $${order.tip_amount}`);
                         }
-                    } else {
-                        console.log(`      ⏳ Pedido no entregado aún (status: ${order?.status})`);
                     }
                 }
             }
@@ -964,7 +949,7 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
         console.log(`   Neto driver: $${driverNetAmount.toFixed(2)}`);
 
         res.json({
-            total_packages: packages.length,
+            total_packages: deliveredOrders?.length || 0,
             total_orders: totalOrders,
             total_amount: totalAmount,
             total_tips: totalTips,
