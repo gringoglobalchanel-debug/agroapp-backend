@@ -280,6 +280,8 @@ app.post("/orders", authMiddleware, async (req, res) => {
         payment_method,
         deliveryAddress,
         delivery_address,
+        delivery_latitude,
+        delivery_longitude,
         notes,
         tip_amount
     } = req.body;
@@ -287,10 +289,14 @@ app.post("/orders", authMiddleware, async (req, res) => {
     const finalPaymentMethod = paymentMethod || payment_method;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
     const finalTipAmount = tip_amount || 0;
+    const finalLatitude = delivery_latitude || null;
+    const finalLongitude = delivery_longitude || null;
 
     console.log("🔍 paymentMethod VALUE:", finalPaymentMethod);
     console.log("🔍 paymentMethod TYPE:", typeof finalPaymentMethod);
     console.log("🔍 tip_amount:", finalTipAmount);
+    console.log("🔍 latitude:", finalLatitude);
+    console.log("🔍 longitude:", finalLongitude);
     console.log("🔍 items length:", items?.length);
 
     if (!items || items.length === 0)
@@ -329,6 +335,8 @@ app.post("/orders", authMiddleware, async (req, res) => {
                 payment_method: finalPaymentMethod,
                 payment_status: "completed",
                 delivery_address: finalDeliveryAddress || req.user.address,
+                delivery_latitude: finalLatitude,
+                delivery_longitude: finalLongitude,
                 delivery_date: deliveryDate,
                 total_amount: totalAmount,
                 tip_amount: finalTipAmount,
@@ -432,7 +440,7 @@ function generateReferenceCode() {
 
 app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     console.log("📦 POST /orders/pending-yappi");
-    const { items, deliveryAddress, delivery_address } = req.body;
+    const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude } = req.body;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
 
     if (!items || items.length === 0) {
@@ -466,6 +474,8 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
                 payment_method: "yappi",
                 payment_status: "pending",
                 delivery_address: finalDeliveryAddress || req.user.address,
+                delivery_latitude: delivery_latitude || null,
+                delivery_longitude: delivery_longitude || null,
                 delivery_date: deliveryDate,
                 total_amount: totalAmount,
                 reference_code: referenceCode,
@@ -760,7 +770,7 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
             const { data: pkgOrders } = await supabase
                 .from("package_orders")
-                .select("order_id, orders(id, user_id, delivery_address, total_amount, tip_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
+                .select("order_id, orders(id, user_id, delivery_address, delivery_latitude, delivery_longitude, total_amount, tip_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
                 .eq("package_id", pkg.id);
 
             return {
@@ -773,6 +783,8 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
                     order_id: po.orders?.id,
                     user_id: po.orders?.user_id,
                     delivery_address: po.orders?.delivery_address,
+                    delivery_latitude: po.orders?.delivery_latitude || null,
+                    delivery_longitude: po.orders?.delivery_longitude || null,
                     total_amount: po.orders?.total_amount,
                     tip_amount: po.orders?.tip_amount || 0,
                     payment_method: po.orders?.payment_method,
@@ -865,7 +877,7 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
             const { data: pkgOrders } = await supabase
                 .from("package_orders")
-                .select("order_id, orders(id, user_id, delivery_address, total_amount, tip_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
+                .select("order_id, orders(id, user_id, delivery_address, delivery_latitude, delivery_longitude, total_amount, tip_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))")
                 .eq("package_id", pkg.id);
 
             return {
@@ -878,6 +890,8 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
                     order_id: po.orders?.id,
                     user_id: po.orders?.user_id,
                     delivery_address: po.orders?.delivery_address,
+                    delivery_latitude: po.orders?.delivery_latitude || null,
+                    delivery_longitude: po.orders?.delivery_longitude || null,
                     total_amount: po.orders?.total_amount,
                     tip_amount: po.orders?.tip_amount || 0,
                     payment_method: po.orders?.payment_method,
@@ -908,7 +922,6 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
 
         console.log(`📅 Semana desde: ${weekStart.toISOString()}`);
 
-        // Obtener TODOS los pedidos entregados por este driver en la semana
         const { data: deliveredOrders, error } = await supabase
             .from("orders")
             .select("id, tip_amount, status, updated_at")
@@ -1006,7 +1019,6 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
             return res.status(403).json({ error: "No tienes este pedido asignado" });
         }
 
-        // Actualizar estado del pedido
         const { data: updatedOrder, error: updateError } = await supabase
             .from("orders")
             .update({
@@ -1025,7 +1037,6 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
         console.log(`✅ Pedido ${orderId} actualizado a "${status}" por driver ${req.user.userId}`);
         console.log(`   💰 Propina del pedido entregado: $${order.tip_amount || 0}`);
 
-        // ELIMINAR LA RELACIÓN DEL PEDIDO CON EL PAQUETE
         const { error: deleteRelationError } = await supabase
             .from("package_orders")
             .delete()
@@ -1037,7 +1048,6 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
             console.log(`✅ Relación eliminada para pedido ${orderId}`);
         }
 
-        // VERIFICAR SI EL PAQUETE QUEDÓ VACÍO
         const { data: remainingOrders, error: remainingError } = await supabase
             .from("package_orders")
             .select("order_id")
