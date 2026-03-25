@@ -369,7 +369,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
             throw itemsError;
         }
 
-        console.log("✅ Pedido creado:", order.id);
+        console.log(`✅ Pedido creado: ${order.id} - Propina: $${finalTipAmount}`);
         res.json({ message: "Pedido creado", orderId: order.id, deliveryDate });
     } catch (e) {
         console.error("❌ Error creando pedido:", e.message);
@@ -823,17 +823,11 @@ app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, 
 
         if (updateError) throw updateError;
 
-        const totalPayment = pkg.current_size * 2.50;
-        const driverPayment = totalPayment * 0.90;
-        const platformFee = totalPayment * 0.10;
-
         console.log(`✅ Driver ${req.user.userId} tomó paquete ${package_id} con ${pkg.current_size} pedidos`);
 
         res.json({
             message: "Paquete tomado exitosamente",
             package: updated,
-            driver_payment: driverPayment,
-            platform_fee: platformFee,
             total_orders: pkg.current_size
         });
     } catch (e) {
@@ -897,34 +891,83 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
         weekStart.setDate(today.getDate() - daysToMonday);
         weekStart.setHours(0, 0, 0, 0);
 
+        console.log(`📅 Semana desde: ${weekStart.toISOString()}`);
+
+        // Obtener los paquetes tomados por el driver en la semana
         const { data: packages, error } = await supabase
             .from("dynamic_packages")
-            .select("current_size, taken_at")
+            .select("id, current_size, taken_at")
             .eq("taken_by", req.user.userId)
             .eq("status", "taken")
             .gte("taken_at", weekStart.toISOString());
 
         if (error) throw error;
 
-        let totalOrders = 0;
-        let totalAmount = 0;
+        console.log(`📦 Paquetes encontrados: ${packages?.length || 0}`);
 
+        let totalOrders = 0;
+        let totalBasePayment = 0;
+        let totalTips = 0;
+
+        // Para cada paquete, obtener los pedidos y sumar sus propinas SOLO DE PEDIDOS ENTREGADOS
         for (const pkg of packages) {
-            totalOrders += pkg.current_size;
-            totalAmount += pkg.current_size * 2.50;
+            console.log(`  📦 Procesando paquete: ${pkg.id} (${pkg.current_size} pedidos)`);
+
+            // Obtener los pedidos del paquete
+            const { data: packageOrders } = await supabase
+                .from("package_orders")
+                .select("order_id")
+                .eq("package_id", pkg.id);
+
+            if (packageOrders && packageOrders.length > 0) {
+                for (const po of packageOrders) {
+                    // Obtener el pedido y verificar si está entregado
+                    const { data: order } = await supabase
+                        .from("orders")
+                        .select("tip_amount, status")
+                        .eq("id", po.order_id)
+                        .single();
+
+                    console.log(`    📝 Pedido: ${po.order_id} | status: ${order?.status} | tip: ${order?.tip_amount || 0}`);
+
+                    // SOLO contar pedidos entregados (status = 'completed')
+                    if (order && order.status === 'completed') {
+                        totalOrders++;
+                        totalBasePayment += 2.50;
+                        if (order.tip_amount && order.tip_amount > 0) {
+                            totalTips += order.tip_amount;
+                            console.log(`      ✅ Propina sumada: $${order.tip_amount} (Total propinas: $${totalTips})`);
+                        } else {
+                            console.log(`      ℹ️ Sin propina`);
+                        }
+                    } else {
+                        console.log(`      ⏳ Pedido no entregado aún (status: ${order?.status})`);
+                    }
+                }
+            }
         }
 
-        const platformCommission = totalAmount * 0.10;
-        const driverNetAmount = totalAmount * 0.90;
+        const totalAmount = totalBasePayment + totalTips;
+        const platformCommission = totalBasePayment * 0.10;
+        const driverNetAmount = totalBasePayment * 0.90 + totalTips;
 
         const daysUntilFriday = (5 - today.getDay() + 7) % 7;
         const nextFriday = new Date(today);
         nextFriday.setDate(today.getDate() + daysUntilFriday);
 
+        console.log(`📊 RESUMEN FINAL:`);
+        console.log(`   Total entregas: ${totalOrders}`);
+        console.log(`   Pago base: $${totalBasePayment.toFixed(2)}`);
+        console.log(`   Propinas: $${totalTips.toFixed(2)}`);
+        console.log(`   Total: $${totalAmount.toFixed(2)}`);
+        console.log(`   Comisión plataforma: $${platformCommission.toFixed(2)}`);
+        console.log(`   Neto driver: $${driverNetAmount.toFixed(2)}`);
+
         res.json({
             total_packages: packages.length,
             total_orders: totalOrders,
             total_amount: totalAmount,
+            total_tips: totalTips,
             platform_commission: platformCommission,
             driver_net_amount: driverNetAmount,
             next_payment_date: nextFriday.toISOString().split("T")[0]
@@ -949,13 +992,15 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
     try {
         const { data: order, error: orderError } = await supabase
             .from("orders")
-            .select("id, dynamic_package_id, driver_id, status")
+            .select("id, dynamic_package_id, driver_id, status, tip_amount")
             .eq("id", orderId)
             .single();
 
         if (orderError || !order) {
             return res.status(404).json({ error: "Pedido no encontrado" });
         }
+
+        console.log(`   💰 Propina del pedido: $${order.tip_amount || 0}`);
 
         if (!order.dynamic_package_id) {
             return res.status(400).json({ error: "Este pedido no está asignado a ningún paquete" });
@@ -989,6 +1034,7 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
         }
 
         console.log(`✅ Pedido ${orderId} actualizado a "${status}" por driver ${req.user.userId}`);
+        console.log(`   💰 Propina del pedido entregado: $${order.tip_amount || 0}`);
 
         // ELIMINAR LA RELACIÓN DEL PEDIDO CON EL PAQUETE
         const { error: deleteRelationError } = await supabase
