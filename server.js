@@ -810,6 +810,21 @@ app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, 
             return res.status(404).json({ error: "Paquete no disponible" });
         }
 
+        // Obtener los pedidos del paquete y actualizar su driver_id
+        const { data: packageOrders } = await supabase
+            .from("package_orders")
+            .select("order_id")
+            .eq("package_id", package_id);
+
+        if (packageOrders && packageOrders.length > 0) {
+            for (const po of packageOrders) {
+                await supabase
+                    .from("orders")
+                    .update({ driver_id: req.user.userId })
+                    .eq("id", po.order_id);
+            }
+        }
+
         const { data: updated, error: updateError } = await supabase
             .from("dynamic_packages")
             .update({
@@ -893,41 +908,28 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
 
         console.log(`📅 Semana desde: ${weekStart.toISOString()}`);
 
-        // Obtener TODOS los pedidos entregados por el driver en la semana
+        // Obtener TODOS los pedidos entregados por este driver en la semana
         const { data: deliveredOrders, error } = await supabase
             .from("orders")
-            .select("id, tip_amount, status, updated_at, dynamic_package_id")
+            .select("id, tip_amount, status, updated_at")
             .eq("status", "completed")
+            .eq("driver_id", req.user.userId)
             .gte("updated_at", weekStart.toISOString());
 
         if (error) throw error;
 
-        console.log(`📦 Pedidos entregados encontrados: ${deliveredOrders?.length || 0}`);
+        console.log(`📦 Pedidos entregados por este driver: ${deliveredOrders?.length || 0}`);
 
         let totalOrders = 0;
         let totalBasePayment = 0;
         let totalTips = 0;
 
-        // Para cada pedido entregado, verificar que pertenece a un paquete que el driver tomó
-        if (deliveredOrders && deliveredOrders.length > 0) {
-            for (const order of deliveredOrders) {
-                // Verificar si el pedido pertenece a un paquete que este driver tomó
-                if (order.dynamic_package_id) {
-                    const { data: pkg } = await supabase
-                        .from("dynamic_packages")
-                        .select("taken_by")
-                        .eq("id", order.dynamic_package_id)
-                        .single();
-
-                    if (pkg && pkg.taken_by === req.user.userId) {
-                        totalOrders++;
-                        totalBasePayment += 2.50;
-                        if (order.tip_amount && order.tip_amount > 0) {
-                            totalTips += order.tip_amount;
-                            console.log(`  ✅ Pedido ${order.id} - Propina: $${order.tip_amount}`);
-                        }
-                    }
-                }
+        for (const order of deliveredOrders || []) {
+            totalOrders++;
+            totalBasePayment += 2.50;
+            if (order.tip_amount && order.tip_amount > 0) {
+                totalTips += order.tip_amount;
+                console.log(`  ✅ Pedido ${order.id} - Propina: $${order.tip_amount}`);
             }
         }
 
@@ -994,10 +996,13 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
             .from("dynamic_packages")
             .select("id, taken_by")
             .eq("id", order.dynamic_package_id)
-            .eq("taken_by", req.user.userId)
             .single();
 
         if (pkgError || !pkg) {
+            return res.status(403).json({ error: "Paquete no encontrado" });
+        }
+
+        if (pkg.taken_by !== req.user.userId) {
             return res.status(403).json({ error: "No tienes este pedido asignado" });
         }
 
@@ -1032,7 +1037,7 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
             console.log(`✅ Relación eliminada para pedido ${orderId}`);
         }
 
-        // VERIFICAR SI EL PAQUETE QUEDÓ VACÍO - AHORA LO MARCA COMO "completed" NO "available"
+        // VERIFICAR SI EL PAQUETE QUEDÓ VACÍO
         const { data: remainingOrders, error: remainingError } = await supabase
             .from("package_orders")
             .select("order_id")
@@ -1044,7 +1049,7 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
             const { error: updatePackageError } = await supabase
                 .from("dynamic_packages")
                 .update({
-                    status: "completed",  // ← Cambiado de "available" a "completed"
+                    status: "completed",
                     taken_by: null,
                     taken_at: null
                 })
