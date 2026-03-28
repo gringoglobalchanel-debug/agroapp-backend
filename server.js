@@ -243,8 +243,9 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
     for (const item of items) {
         const productId = item.productId || item.product_id;
-        const { data: product } = await supabase.from("products").select("stock").eq("id", productId).single();
-        if (product && product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente` });
+        const { data: product } = await supabase.from("products").select("stock, name").eq("id", productId).single();
+        if (!product) return res.status(400).json({ error: `Producto no encontrado: ID ${productId}` });
+        if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente` });
     }
     const referenceCode = generateReferenceCode();
     const tomorrow = new Date(Date.now() + 86400000);
@@ -256,14 +257,26 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     }
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
-            user_id: req.user.userId, payment_method: "yappi", payment_status: "pending",
-            delivery_address: finalDeliveryAddress || req.user.address, delivery_latitude: delivery_latitude || null,
-            delivery_longitude: delivery_longitude || null, delivery_date: deliveryDate,
-            total_amount: totalAmount, reference_code: referenceCode, status: "pending_payment"
+            user_id: req.user.userId,
+            payment_method: "yappi",
+            payment_status: "pending",
+            delivery_address: finalDeliveryAddress || req.user.address,
+            delivery_latitude: delivery_latitude || null,
+            delivery_longitude: delivery_longitude || null,
+            delivery_date: deliveryDate,
+            total_amount: totalAmount,
+            reference_code: referenceCode,
+            status: "pending"
         }).select().single();
         if (orderError) throw orderError;
-        const orderItems = items.map(item => ({ order_id: order.id, product_id: item.productId || item.product_id, quantity: item.quantity, unit_price: item.price || 0 }));
-        await supabase.from("order_items").insert(orderItems);
+        const orderItems = items.map(item => ({
+            order_id: order.id,
+            product_id: item.productId || item.product_id,
+            quantity: item.quantity,
+            unit_price: item.price || 0
+        }));
+        const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
+        if (itemsError) throw itemsError;
         res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -281,7 +294,6 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
             const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
             await supabase.from("products").update({ stock: product.stock - item.quantity }).eq("id", item.product_id);
         }
-        // Marcar como pending_approval — espera al admin
         await supabase.from("orders").update({ payment_status: "pending_approval", status: "pending_approval", payment_confirmed_at: new Date().toISOString() }).eq("id", order.id);
         res.json({ success: true, message: "Pago enviado a revisión. El admin lo aprobará en breve.", orderId: order.id });
     } catch (e) { res.status(500).json({ error: e.message }); }
