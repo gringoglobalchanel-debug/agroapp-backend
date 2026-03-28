@@ -22,16 +22,7 @@ app.get("/", (req, res) => {
     res.json({
         message: "🌱 API de AgroApp funcionando correctamente",
         version: "1.0.0",
-        status: "online",
-        endpoints: {
-            auth: { login: "POST /auth/login", register: "POST /auth/register", profile: "GET /auth/profile", updateProfile: "PATCH /auth/profile", changePassword: "PATCH /auth/password" },
-            products: "GET /products",
-            orders: { create: "POST /orders", myOrders: "GET /orders/my", active: "GET /orders/active", cancel: "PATCH /orders/:id/cancel", pendingYappi: "POST /orders/pending-yappi", confirmYappi: "POST /orders/:id/confirm-yappi" },
-            vendor: { byClient: "GET /vendor/orders/by-client", byProduct: "GET /vendor/orders/by-product", updateStatus: "PATCH /vendor/orders/:id/status" },
-            driver: { availablePackages: "GET /driver/packages/available", takePackage: "POST /driver/packages/take", myPackages: "GET /driver/packages/my", earningsPackages: "GET /driver/earnings/packages", updateOrderStatus: "PATCH /driver/orders/:orderId/status", updateLocation: "POST /driver/location", getLocation: "GET /driver/location/:orderId", getLocationByDriver: "GET /driver/location/by-driver/:driverId" },
-            admin: { dashboard: "GET /admin/dashboard/stats", products: "GET /admin/products", createProduct: "POST /admin/products", updateProduct: "PATCH /admin/products/:id", updateStock: "PATCH /admin/products/:id/stock", deleteProduct: "DELETE /admin/products/:id", driverPayments: "GET /admin/drivers/payments", processPayment: "POST /admin/drivers/payments/process", calculatePayment: "POST /admin/drivers/payments/calculate", inventoryLogs: "GET /admin/inventory/logs", categories: "GET /admin/categories", driversList: "GET /admin/drivers/list" },
-            payments: { createIntent: "POST /payments/create-intent" }
-        }
+        status: "online"
     });
 });
 
@@ -78,7 +69,6 @@ const adminMiddleware = async (req, res, next) => {
 // ==================== AUTH ====================
 
 app.post("/auth/register", async (req, res) => {
-    console.log("📝 POST /auth/register");
     const { full_name: name, email, password, phone, address, user_type } = req.body;
     if (!name || !email || !password || !address) return res.status(400).json({ error: "Faltan campos" });
     const userType = user_type === "driver" ? "driver" : "cliente";
@@ -88,16 +78,12 @@ app.post("/auth/register", async (req, res) => {
         const hashed = await bcrypt.hash(password, 10);
         const { data, error } = await supabase.from("users").insert({ full_name: name, email, password_hash: hashed, phone, address, role: "cliente", user_type: userType }).select().single();
         if (error) throw error;
-        console.log(`✅ Usuario registrado: ${data.id} - Tipo: ${userType}`);
         res.json({ message: "Usuario creado", userId: data.id });
-    } catch (e) { console.error("❌ Error en registro:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/auth/login", async (req, res) => {
-    console.log("🔐 POST /auth/login");
     const { email, password } = req.body;
-    console.log(`📧 Email: ${email}`);
-
     try {
         const { data: user, error } = await supabase.from("users").select("*").eq("email", email).single();
         if (error || !user) return res.status(401).json({ error: "Credenciales invalidas" });
@@ -111,15 +97,9 @@ app.post("/auth/login", async (req, res) => {
 
         if (!valid) return res.status(401).json({ error: "Credenciales invalidas" });
 
-        // ✅ FIX: user_type incluido en el JWT
+        // ✅ user_type incluido en el JWT
         const token = jwt.sign(
-            {
-                userId: user.id,
-                role: user.role,
-                userType: user.user_type || "cliente",
-                name: user.full_name,
-                address: user.address
-            },
+            { userId: user.id, role: user.role, userType: user.user_type || "cliente", name: user.full_name, address: user.address },
             JWT_SECRET,
             { expiresIn: "7d" }
         );
@@ -136,27 +116,23 @@ app.post("/auth/login", async (req, res) => {
 });
 
 app.get("/auth/profile", authMiddleware, async (req, res) => {
-    console.log("👤 GET /auth/profile");
     try {
         const { data, error } = await supabase.from("users").select("id, full_name, email, phone, address, role, user_type").eq("id", req.user.userId).single();
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error obteniendo perfil:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch("/auth/profile", authMiddleware, async (req, res) => {
-    console.log("📝 PATCH /auth/profile");
     const { full_name, phone, address } = req.body;
     try {
         const { data, error } = await supabase.from("users").update({ full_name, phone, address }).eq("id", req.user.userId).select().single();
         if (error) throw error;
-        console.log("✅ Perfil actualizado:", data.id);
         res.json({ message: "Perfil actualizado", name: data.full_name, phone: data.phone, address: data.address });
-    } catch (e) { console.error("❌ Error actualizando perfil:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch("/auth/password", authMiddleware, async (req, res) => {
-    console.log("🔑 PATCH /auth/password");
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword) return res.status(400).json({ error: "Faltan campos" });
     if (newPassword.length < 6) return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
@@ -168,27 +144,23 @@ app.patch("/auth/password", authMiddleware, async (req, res) => {
         const hashed = await bcrypt.hash(newPassword, 10);
         const { error: updateError } = await supabase.from("users").update({ password_hash: hashed }).eq("id", req.user.userId);
         if (updateError) throw updateError;
-        console.log("✅ Contraseña actualizada:", user.email);
         res.json({ message: "Contraseña actualizada correctamente" });
-    } catch (e) { console.error("❌ Error cambiando contraseña:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== PRODUCTOS ====================
 
 app.get("/products", async (req, res) => {
-    console.log("📦 GET /products");
     try {
         const { data, error } = await supabase.from("products").select("*, categories(name)").eq("is_available", true).order("category_id");
         if (error) throw error;
-        console.log(`✅ ${data.length} productos enviados`);
         res.json(data);
-    } catch (e) { console.error("❌ Error en /products:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== PEDIDOS CON STOCK AUTOMÁTICO ====================
+// ==================== PEDIDOS ====================
 
 app.post("/orders", authMiddleware, async (req, res) => {
-    console.log("📦 POST /orders");
     const { items, paymentMethod, payment_method, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, notes, tip_amount } = req.body;
     const finalPaymentMethod = paymentMethod || payment_method;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
@@ -265,26 +237,20 @@ app.post("/orders", authMiddleware, async (req, res) => {
             });
         }
 
-        console.log(`✅ Pedido creado: ${order.id}`);
         res.json({ message: "Pedido creado", orderId: order.id, deliveryDate });
-    } catch (e) {
-        console.error("❌ Error creando pedido:", e.message);
-        res.status(500).json({ error: e.message });
-    }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/orders/my", authMiddleware, async (req, res) => {
-    console.log("📋 GET /orders/my");
     try {
         const { data, error } = await supabase.from("orders").select("*, order_items(*, products(name, unit))").eq("user_id", req.user.userId).order("created_at", { ascending: false });
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error obteniendo pedidos:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ✅ NUEVO: Pedido activo del cliente para tracking
 app.get("/orders/active", authMiddleware, async (req, res) => {
-    console.log("📍 GET /orders/active");
     try {
         const { data, error } = await supabase
             .from("orders")
@@ -296,7 +262,7 @@ app.get("/orders/active", authMiddleware, async (req, res) => {
             .limit(1)
             .single();
 
-        if (error && error.code === "PGRST116") return res.json(null); // sin pedido activo
+        if (error && error.code === "PGRST116") return res.json(null);
         if (error) throw error;
 
         res.json({
@@ -314,7 +280,6 @@ app.get("/orders/active", authMiddleware, async (req, res) => {
 });
 
 app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
-    console.log("❌ PATCH /orders/:id/cancel");
     try {
         const { data: order, error: fetchError } = await supabase.from("orders").select("*").eq("id", req.params.id).single();
         if (fetchError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
@@ -330,7 +295,7 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
         const { data, error } = await supabase.from("orders").update({ status: "cancelled" }).eq("id", req.params.id).select().single();
         if (error) throw error;
         res.json({ message: "Pedido cancelado", order: data });
-    } catch (e) { console.error("❌ Error cancelando pedido:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== YAPPI ====================
@@ -345,7 +310,6 @@ function generateReferenceCode() {
 }
 
 app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
-    console.log("📦 POST /orders/pending-yappi");
     const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude } = req.body;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
@@ -386,12 +350,11 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
             unit_price: item.price || 0
         }));
         await supabase.from("order_items").insert(orderItems);
-        res.json({ orderId: order.id, referenceCode: referenceCode, totalAmount: totalAmount, deliveryDate: deliveryDate });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+        res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
-    console.log(`💰 POST /orders/${req.params.id}/confirm-yappi`);
     const { referenceCode } = req.body;
     try {
         const { data: order, error } = await supabase.from("orders").select("*").eq("id", req.params.id).single();
@@ -412,7 +375,7 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
             payment_confirmed_at: new Date().toISOString()
         }).eq("id", order.id);
         res.json({ success: true, message: "Pedido confirmado", orderId: order.id });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== VENDEDOR ====================
@@ -424,7 +387,7 @@ app.get("/vendor/orders/by-client", authMiddleware, async (req, res) => {
         const { data, error } = await supabase.from("orders_by_client").select("*").eq("delivery_date", date);
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/vendor/orders/by-product", authMiddleware, async (req, res) => {
@@ -434,7 +397,7 @@ app.get("/vendor/orders/by-product", authMiddleware, async (req, res) => {
         const { data, error } = await supabase.from("orders_by_product").select("*").eq("delivery_date", date);
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
@@ -444,7 +407,7 @@ app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
         const { data, error } = await supabase.from("orders").update({ status }).eq("id", req.params.id).select().single();
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== DRIVER - PAQUETES ====================
@@ -458,7 +421,7 @@ app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (r
             return { ...pkg, orders: pkgOrders?.map(po => ({ order_id: po.orders?.id, user_id: po.orders?.user_id, delivery_address: po.orders?.delivery_address, delivery_latitude: po.orders?.delivery_latitude, delivery_longitude: po.orders?.delivery_longitude, total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0, payment_method: po.orders?.payment_method, created_at: po.orders?.created_at, customer_name: po.orders?.users?.full_name || "Cliente", customer_phone: po.orders?.users?.phone || "No disponible" })) || [] };
         }));
         res.json(formattedPackages);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, res) => {
@@ -472,7 +435,7 @@ app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, 
         const { data: updated, error: updateError } = await supabase.from("dynamic_packages").update({ status: "taken", taken_by: req.user.userId, taken_at: new Date().toISOString() }).eq("id", package_id).select().single();
         if (updateError) throw updateError;
         res.json({ message: "Paquete tomado", package: updated, total_orders: pkg.current_size });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res) => {
@@ -484,7 +447,7 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
             return { ...pkg, orders: pkgOrders?.map(po => ({ order_id: po.orders?.id, user_id: po.orders?.user_id, delivery_address: po.orders?.delivery_address, delivery_latitude: po.orders?.delivery_latitude, delivery_longitude: po.orders?.delivery_longitude, total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0, payment_method: po.orders?.payment_method, created_at: po.orders?.created_at, customer_name: po.orders?.users?.full_name || "Cliente", customer_phone: po.orders?.users?.phone || "No disponible" })) || [] };
         }));
         res.json(formattedPackages);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (req, res) => {
@@ -505,7 +468,7 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
         const nextFriday = new Date(today);
         nextFriday.setDate(today.getDate() + daysUntilFriday);
         res.json({ total_packages: deliveredOrders?.length || 0, total_orders: totalOrders, total_amount: totalBasePayment + totalTips, total_tips: totalTips, platform_commission: platformCommission, driver_net_amount: driverNetAmount, next_payment_date: nextFriday.toISOString().split("T")[0] });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, async (req, res) => {
@@ -518,13 +481,13 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
         const { data: pkg, error: pkgError } = await supabase.from("dynamic_packages").select("id, taken_by").eq("id", order.dynamic_package_id).single();
         if (pkgError || !pkg) return res.status(403).json({ error: "Paquete no encontrado" });
         if (pkg.taken_by !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido asignado" });
-        const { data: updatedOrder, error: updateError } = await supabase.from("orders").update({ status: status, updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
+        const { data: updatedOrder, error: updateError } = await supabase.from("orders").update({ status, updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
         if (updateError) return res.status(400).json({ error: "Error al actualizar" });
         await supabase.from("package_orders").delete().eq("order_id", orderId);
         const { data: remainingOrders } = await supabase.from("package_orders").select("order_id").eq("package_id", order.dynamic_package_id);
         if (remainingOrders && remainingOrders.length === 0) await supabase.from("dynamic_packages").update({ status: "completed", taken_by: null, taken_at: null }).eq("id", order.dynamic_package_id);
         res.json({ success: true, message: "Estado actualizado", order: updatedOrder });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) => {
@@ -536,7 +499,7 @@ app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) 
         if (order.driver_id !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido" });
         await supabase.from("driver_locations").upsert({ driver_id: req.user.userId, order_id: orderId, latitude, longitude, updated_at: new Date().toISOString() }, { onConflict: "order_id" });
         res.json({ success: true });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/driver/location/:orderId", authMiddleware, async (req, res) => {
@@ -548,10 +511,10 @@ app.get("/driver/location/:orderId", authMiddleware, async (req, res) => {
         const { data: location, error: locationError } = await supabase.from("driver_locations").select("latitude, longitude, updated_at").eq("order_id", orderId).single();
         if (locationError && locationError.code !== 'PGRST116') throw locationError;
         res.json(location || {});
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ✅ NUEVO: Ubicación del driver por driverId (para el cliente en TrackingActivity)
+// ✅ NUEVO: Ubicación del driver por driverId (para TrackingActivity del cliente)
 app.get("/driver/location/by-driver/:driverId", authMiddleware, async (req, res) => {
     const { driverId } = req.params;
     try {
@@ -566,7 +529,7 @@ app.get("/driver/location/by-driver/:driverId", authMiddleware, async (req, res)
         if (error && error.code === "PGRST116") return res.json({ latitude: null, longitude: null });
         if (error) throw error;
         res.json(location);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== ADMIN ====================
@@ -591,7 +554,7 @@ app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, r
         const { data: pendingPaymentsData } = await supabase.from("driver_payments").select("net_amount").eq("payment_status", "pending");
         const pendingPayments = pendingPaymentsData?.reduce((sum, p) => sum + (p.net_amount || 0), 0) || 0;
         res.json({ totalProducts: totalProducts || 0, lowStockProducts, outOfStockProducts: outOfStockProducts || 0, totalOrdersToday, totalRevenueToday, totalOrdersWeek, totalRevenueWeek, totalDrivers: totalDrivers || 0, activeDrivers, pendingPayments });
-    } catch (e) { console.error("❌ Error en dashboard:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
@@ -604,7 +567,7 @@ app.get("/admin/products", authMiddleware, adminMiddleware, async (req, res) => 
         let products = data || [];
         if (req.query.low_stock === "true") products = products.filter(p => { const stock = p.stock || 0; const minStock = p.min_stock || 0; return stock > 0 && stock < minStock; });
         res.json(products.map(p => ({ ...p, category: p.categories?.name, stock: p.stock || 0, min_stock: p.min_stock || 0 })));
-    } catch (e) { console.error("❌ Error en /admin/products:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
@@ -613,17 +576,16 @@ app.post("/admin/products", authMiddleware, adminMiddleware, async (req, res) =>
         const { data, error } = await supabase.from("products").insert({ name, description, price, unit, category_id, stock: stock || 0, min_stock: min_stock || 0, image_url, is_available: true }).select().single();
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch("/admin/products/:id", authMiddleware, adminMiddleware, async (req, res) => {
-    const { id } = req.params;
     const updates = req.body;
     try {
-        const { data, error } = await supabase.from("products").update(updates).eq("id", id).select().single();
+        const { data, error } = await supabase.from("products").update(updates).eq("id", req.params.id).select().single();
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch("/admin/products/:id/stock", authMiddleware, adminMiddleware, async (req, res) => {
@@ -641,16 +603,15 @@ app.patch("/admin/products/:id/stock", authMiddleware, adminMiddleware, async (r
         if (updateError) throw updateError;
         await supabase.from("inventory_logs").insert({ product_id: id, previous_quantity: previousQuantity, new_quantity: newQuantity, change_type, notes, created_by: req.user.userId });
         res.json({ success: true, message: "Stock actualizado" });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete("/admin/products/:id", authMiddleware, adminMiddleware, async (req, res) => {
-    const { id } = req.params;
     try {
-        const { error } = await supabase.from("products").delete().eq("id", id);
+        const { error } = await supabase.from("products").delete().eq("id", req.params.id);
         if (error) throw error;
         res.json({ message: "Producto eliminado" });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/admin/drivers/payments", authMiddleware, adminMiddleware, async (req, res) => {
@@ -661,7 +622,7 @@ app.get("/admin/drivers/payments", authMiddleware, adminMiddleware, async (req, 
         const { data, error } = await query.order("week_start", { ascending: false });
         if (error) throw error;
         res.json(data.map(p => ({ ...p, driver_name: p.users?.full_name })));
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/admin/drivers/payments/process", authMiddleware, adminMiddleware, async (req, res) => {
@@ -670,7 +631,7 @@ app.post("/admin/drivers/payments/process", authMiddleware, adminMiddleware, asy
         const { error } = await supabase.from("driver_payments").update({ payment_status, paid_at: payment_status === "paid" ? new Date().toISOString() : null }).eq("id", payment_id);
         if (error) throw error;
         res.json({ message: "Pago procesado" });
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/admin/drivers/payments/calculate", authMiddleware, adminMiddleware, async (req, res) => {
@@ -689,7 +650,7 @@ app.post("/admin/drivers/payments/calculate", authMiddleware, adminMiddleware, a
         const { data: payment, error: upsertError } = await supabase.from("driver_payments").upsert({ driver_id, week_start, week_end: weekEnd.toISOString().split("T")[0], total_orders: totalOrders, total_base_payment: totalBasePayment, total_tips: totalTips, platform_commission: platformCommission, net_amount: netAmount, payment_status: "pending" }, { onConflict: "driver_id,week_start" }).select().single();
         if (upsertError) throw upsertError;
         res.json({ success: true, payment, total_orders: totalOrders, net_amount: netAmount });
-    } catch (e) { console.error("❌ Error calculando pago:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/admin/inventory/logs", authMiddleware, adminMiddleware, async (req, res) => {
@@ -700,7 +661,7 @@ app.get("/admin/inventory/logs", authMiddleware, adminMiddleware, async (req, re
         const { data, error } = await query;
         if (error) throw error;
         res.json(data.map(l => ({ ...l, product_name: l.products?.name, created_by_name: l.users?.full_name })));
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/admin/categories", authMiddleware, adminMiddleware, async (req, res) => {
@@ -708,7 +669,7 @@ app.get("/admin/categories", authMiddleware, adminMiddleware, async (req, res) =
         const { data, error } = await supabase.from("categories").select("*").order("name");
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/admin/drivers/list", authMiddleware, adminMiddleware, async (req, res) => {
@@ -716,7 +677,7 @@ app.get("/admin/drivers/list", authMiddleware, adminMiddleware, async (req, res)
         const { data, error } = await supabase.from("users").select("id, full_name, email, phone, user_type").eq("user_type", "driver");
         if (error) throw error;
         res.json(data);
-    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== STRIPE ====================
@@ -727,13 +688,12 @@ app.post('/payments/create-intent', authMiddleware, async (req, res) => {
         if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto inválido' });
         const paymentIntent = await stripe.paymentIntents.create({ amount, currency, metadata: { userId: req.user.userId } });
         res.json({ clientSecret: paymentIntent.client_secret });
-    } catch (error) { console.error('❌ Error:', error.message); res.status(500).json({ error: 'Error al procesar el pago' }); }
+    } catch (error) { res.status(500).json({ error: 'Error al procesar el pago' }); }
 });
 
 // ==================== DEBUG ====================
 
 app.get("/debug/users", async (req, res) => {
-    console.log("🐛 GET /debug/users");
     try {
         const { data, error } = await supabase.from("users").select("id, email, full_name, role, user_type, password_hash");
         if (error) throw error;
