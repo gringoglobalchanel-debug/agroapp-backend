@@ -19,11 +19,7 @@ app.use(helmet());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-    res.json({
-        message: "🌱 API de AgroApp funcionando correctamente",
-        version: "1.0.0",
-        status: "online"
-    });
+    res.json({ message: "🌱 API de AgroApp funcionando correctamente", version: "1.0.0", status: "online" });
 });
 
 app.get("/health", (req, res) => {
@@ -87,31 +83,15 @@ app.post("/auth/login", async (req, res) => {
     try {
         const { data: user, error } = await supabase.from("users").select("*").eq("email", email).single();
         if (error || !user) return res.status(401).json({ error: "Credenciales invalidas" });
-
         let valid = false;
-        if (password === user.password_hash) {
-            valid = true;
-        } else {
-            try { valid = await bcrypt.compare(password, user.password_hash); } catch (e) {}
-        }
-
+        if (password === user.password_hash) { valid = true; }
+        else { try { valid = await bcrypt.compare(password, user.password_hash); } catch (e) {} }
         if (!valid) return res.status(401).json({ error: "Credenciales invalidas" });
-
-        // ✅ user_type incluido en el JWT
         const token = jwt.sign(
             { userId: user.id, role: user.role, userType: user.user_type || "cliente", name: user.full_name, address: user.address },
-            JWT_SECRET,
-            { expiresIn: "7d" }
+            JWT_SECRET, { expiresIn: "7d" }
         );
-
-        res.json({
-            token,
-            userId: user.id,
-            name: user.full_name,
-            role: user.role,
-            address: user.address,
-            user_type: user.user_type || "cliente"
-        });
+        res.json({ token, userId: user.id, name: user.full_name, role: user.role, address: user.address, user_type: user.user_type || "cliente" });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -167,17 +147,14 @@ app.post("/orders", authMiddleware, async (req, res) => {
     const finalTipAmount = tip_amount || 0;
     const finalLatitude = delivery_latitude || null;
     const finalLongitude = delivery_longitude || null;
-
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
     if (!finalPaymentMethod) return res.status(400).json({ error: "payment_method es requerido" });
-
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product, error: productError } = await supabase.from("products").select("stock, name").eq("id", productId).single();
         if (productError || !product) return res.status(400).json({ error: `Producto no encontrado: ID ${productId}` });
-        if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente para ${product.name}. Disponible: ${product.stock}, Solicitado: ${item.quantity}` });
+        if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente para ${product.name}.` });
     }
-
     const tomorrow = new Date(Date.now() + 86400000);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
     let totalAmount = 0;
@@ -186,57 +163,31 @@ app.post("/orders", authMiddleware, async (req, res) => {
         const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
         if (product) totalAmount += product.price * item.quantity;
     }
-
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
-            user_id: req.user.userId,
-            payment_method: finalPaymentMethod,
-            payment_status: "completed",
-            delivery_address: finalDeliveryAddress || req.user.address,
-            delivery_latitude: finalLatitude,
-            delivery_longitude: finalLongitude,
-            delivery_date: deliveryDate,
-            total_amount: totalAmount,
-            tip_amount: finalTipAmount,
-            notes: notes || null,
-            status: "pending"
+            user_id: req.user.userId, payment_method: finalPaymentMethod, payment_status: "completed",
+            delivery_address: finalDeliveryAddress || req.user.address, delivery_latitude: finalLatitude,
+            delivery_longitude: finalLongitude, delivery_date: deliveryDate, total_amount: totalAmount,
+            tip_amount: finalTipAmount, notes: notes || null, status: "pending"
         }).select().single();
         if (orderError) throw orderError;
-
         const productPrices = {};
         for (const item of items) {
             const productId = item.productId || item.product_id;
             const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
             if (product) productPrices[productId] = product.price;
         }
-
-        const orderItems = items.map(item => ({
-            order_id: order.id,
-            product_id: item.productId || item.product_id,
-            quantity: item.quantity,
-            unit_price: productPrices[item.productId || item.product_id] || 0
-        }));
-
+        const orderItems = items.map(item => ({ order_id: order.id, product_id: item.productId || item.product_id, quantity: item.quantity, unit_price: productPrices[item.productId || item.product_id] || 0 }));
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
-
         for (const item of items) {
             const productId = item.productId || item.product_id;
             const { data: product } = await supabase.from("products").select("stock").eq("id", productId).single();
             const previousStock = product.stock;
             const newStock = previousStock - item.quantity;
             await supabase.from("products").update({ stock: newStock }).eq("id", productId);
-            await supabase.from("inventory_logs").insert({
-                product_id: productId,
-                previous_quantity: previousStock,
-                new_quantity: newStock,
-                change_type: "sale",
-                order_id: order.id,
-                notes: `Venta en pedido ${order.id}`,
-                created_by: req.user.userId
-            });
+            await supabase.from("inventory_logs").insert({ product_id: productId, previous_quantity: previousStock, new_quantity: newStock, change_type: "sale", order_id: order.id, notes: `Venta en pedido ${order.id}`, created_by: req.user.userId });
         }
-
         res.json({ message: "Pedido creado", orderId: order.id, deliveryDate });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -249,34 +200,13 @@ app.get("/orders/my", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ✅ NUEVO: Pedido activo del cliente para tracking
 app.get("/orders/active", authMiddleware, async (req, res) => {
     try {
-        const { data, error } = await supabase
-            .from("orders")
-            .select("id, status, total_amount, driver_id, delivery_latitude, delivery_longitude")
-            .eq("user_id", req.user.userId)
-            .in("status", ["pending", "in_progress"])
-            .eq("payment_status", "completed")
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .single();
-
+        const { data, error } = await supabase.from("orders").select("id, status, total_amount, driver_id, delivery_latitude, delivery_longitude").eq("user_id", req.user.userId).in("status", ["pending", "in_progress"]).eq("payment_status", "completed").order("created_at", { ascending: false }).limit(1).single();
         if (error && error.code === "PGRST116") return res.json(null);
         if (error) throw error;
-
-        res.json({
-            id: data.id,
-            status: data.status,
-            total: data.total_amount,
-            driver_id: data.driver_id || null,
-            delivery_lat: data.delivery_latitude || null,
-            delivery_lng: data.delivery_longitude || null
-        });
-    } catch (e) {
-        console.error("❌ Error en /orders/active:", e.message);
-        res.status(500).json({ error: e.message });
-    }
+        res.json({ id: data.id, status: data.status, total: data.total_amount, driver_id: data.driver_id || null, delivery_lat: data.delivery_latitude || null, delivery_lng: data.delivery_longitude || null });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
@@ -285,13 +215,11 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
         if (fetchError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.user_id !== req.user.userId) return res.status(403).json({ error: "No autorizado" });
         if (order.status !== "pending") return res.status(400).json({ error: "Solo se pueden cancelar pedidos pendientes" });
-
         const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", order.id);
         for (const item of orderItems || []) {
             const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
             await supabase.from("products").update({ stock: product.stock + item.quantity }).eq("id", item.product_id);
         }
-
         const { data, error } = await supabase.from("orders").update({ status: "cancelled" }).eq("id", req.params.id).select().single();
         if (error) throw error;
         res.json({ message: "Pedido cancelado", order: data });
@@ -313,13 +241,11 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude } = req.body;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
-
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product } = await supabase.from("products").select("stock").eq("id", productId).single();
         if (product && product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente` });
     }
-
     const referenceCode = generateReferenceCode();
     const tomorrow = new Date(Date.now() + 86400000);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
@@ -330,25 +256,13 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     }
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
-            user_id: req.user.userId,
-            payment_method: "yappi",
-            payment_status: "pending",
-            delivery_address: finalDeliveryAddress || req.user.address,
-            delivery_latitude: delivery_latitude || null,
-            delivery_longitude: delivery_longitude || null,
-            delivery_date: deliveryDate,
-            total_amount: totalAmount,
-            reference_code: referenceCode,
-            status: "pending_payment"
+            user_id: req.user.userId, payment_method: "yappi", payment_status: "pending",
+            delivery_address: finalDeliveryAddress || req.user.address, delivery_latitude: delivery_latitude || null,
+            delivery_longitude: delivery_longitude || null, delivery_date: deliveryDate,
+            total_amount: totalAmount, reference_code: referenceCode, status: "pending_payment"
         }).select().single();
         if (orderError) throw orderError;
-
-        const orderItems = items.map(item => ({
-            order_id: order.id,
-            product_id: item.productId || item.product_id,
-            quantity: item.quantity,
-            unit_price: item.price || 0
-        }));
+        const orderItems = items.map(item => ({ order_id: order.id, product_id: item.productId || item.product_id, quantity: item.quantity, unit_price: item.price || 0 }));
         await supabase.from("order_items").insert(orderItems);
         res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -361,20 +275,15 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
         if (error || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.user_id !== req.user.userId) return res.status(403).json({ error: "No autorizado" });
         if (order.reference_code !== referenceCode) return res.status(400).json({ error: "Código de referencia incorrecto" });
-        if (order.payment_status !== "pending") return res.json({ success: true, message: "El pedido ya fue confirmado" });
-
+        if (order.payment_status === "pending_approval" || order.payment_status === "completed") return res.json({ success: true, message: "Pedido ya enviado a revisión" });
         const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", order.id);
         for (const item of orderItems || []) {
             const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
             await supabase.from("products").update({ stock: product.stock - item.quantity }).eq("id", item.product_id);
         }
-
-        await supabase.from("orders").update({
-            payment_status: "completed",
-            status: "confirmed",
-            payment_confirmed_at: new Date().toISOString()
-        }).eq("id", order.id);
-        res.json({ success: true, message: "Pedido confirmado", orderId: order.id });
+        // Marcar como pending_approval — espera al admin
+        await supabase.from("orders").update({ payment_status: "pending_approval", status: "pending_approval", payment_confirmed_at: new Date().toISOString() }).eq("id", order.id);
+        res.json({ success: true, message: "Pago enviado a revisión. El admin lo aprobará en breve.", orderId: order.id });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -490,6 +399,24 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== DRIVER - INICIAR VIAJE ====================
+
+app.post("/driver/orders/:orderId/start-trip", authMiddleware, driverMiddleware, async (req, res) => {
+    const { orderId } = req.params;
+    try {
+        const { data: order, error: orderError } = await supabase.from("orders").select("id, driver_id, status, user_id").eq("id", orderId).single();
+        if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
+        if (order.driver_id !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido" });
+        if (order.status === "in_progress") return res.json({ success: true, message: "Ya en camino" });
+        const { data: updated, error: updateError } = await supabase.from("orders").update({ status: "in_progress", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
+        if (updateError) throw updateError;
+        console.log(`🚴 Driver ${req.user.userId} inició viaje para pedido ${orderId}`);
+        res.json({ success: true, order: updated });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ==================== DRIVER - UBICACIÓN ====================
+
 app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) => {
     const { orderId, latitude, longitude } = req.body;
     if (!orderId || latitude === undefined || longitude === undefined) return res.status(400).json({ error: "orderId, latitude y longitude requeridos" });
@@ -514,25 +441,17 @@ app.get("/driver/location/:orderId", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ✅ NUEVO: Ubicación del driver por driverId (para TrackingActivity del cliente)
 app.get("/driver/location/by-driver/:driverId", authMiddleware, async (req, res) => {
     const { driverId } = req.params;
     try {
-        const { data: location, error } = await supabase
-            .from("driver_locations")
-            .select("latitude, longitude, updated_at")
-            .eq("driver_id", driverId)
-            .order("updated_at", { ascending: false })
-            .limit(1)
-            .single();
-
+        const { data: location, error } = await supabase.from("driver_locations").select("latitude, longitude, updated_at").eq("driver_id", driverId).order("updated_at", { ascending: false }).limit(1).single();
         if (error && error.code === "PGRST116") return res.json({ latitude: null, longitude: null });
         if (error) throw error;
         res.json(location);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== ADMIN ====================
+// ==================== ADMIN - DASHBOARD ====================
 
 app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, res) => {
     try {
@@ -553,9 +472,72 @@ app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, r
         const activeDrivers = new Set(activeDriversData?.map(o => o.driver_id) || []).size;
         const { data: pendingPaymentsData } = await supabase.from("driver_payments").select("net_amount").eq("payment_status", "pending");
         const pendingPayments = pendingPaymentsData?.reduce((sum, p) => sum + (p.net_amount || 0), 0) || 0;
-        res.json({ totalProducts: totalProducts || 0, lowStockProducts, outOfStockProducts: outOfStockProducts || 0, totalOrdersToday, totalRevenueToday, totalOrdersWeek, totalRevenueWeek, totalDrivers: totalDrivers || 0, activeDrivers, pendingPayments });
+        const { count: pendingYappiApprovals } = await supabase.from("orders").select("*", { count: "exact", head: true }).eq("payment_status", "pending_approval").eq("payment_method", "yappi");
+        res.json({ totalProducts: totalProducts || 0, lowStockProducts, outOfStockProducts: outOfStockProducts || 0, totalOrdersToday, totalRevenueToday, totalOrdersWeek, totalRevenueWeek, totalDrivers: totalDrivers || 0, activeDrivers, pendingPayments, pendingYappiApprovals: pendingYappiApprovals || 0 });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ==================== ADMIN - YAPPI PENDIENTES ====================
+
+app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from("orders")
+            .select("id, total_amount, reference_code, created_at, payment_confirmed_at, delivery_address, users!orders_user_id_fkey(full_name, phone, email)")
+            .eq("payment_method", "yappi")
+            .eq("payment_status", "pending_approval")
+            .order("created_at", { ascending: false });
+        if (error) throw error;
+        res.json(data.map(o => ({
+            id: o.id,
+            total_amount: o.total_amount,
+            reference_code: o.reference_code,
+            created_at: o.created_at,
+            payment_confirmed_at: o.payment_confirmed_at,
+            delivery_address: o.delivery_address,
+            customer_name: o.users?.full_name || "Cliente",
+            customer_phone: o.users?.phone || "",
+            customer_email: o.users?.email || ""
+        })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async (req, res) => {
+    const { orderId } = req.params;
+    try {
+        const { data, error } = await supabase
+            .from("orders")
+            .update({ payment_status: "completed", status: "confirmed", updated_at: new Date().toISOString() })
+            .eq("id", orderId)
+            .eq("payment_status", "pending_approval")
+            .select().single();
+        if (error) throw error;
+        if (!data) return res.status(404).json({ error: "Pedido no encontrado o ya procesado" });
+        console.log(`✅ Admin aprobó pago YAPPI del pedido ${orderId}`);
+        res.json({ success: true, message: "Pago YAPPI aprobado", order: data });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async (req, res) => {
+    const { orderId } = req.params;
+    const { reason } = req.body;
+    try {
+        const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", orderId);
+        for (const item of orderItems || []) {
+            const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
+            if (product) await supabase.from("products").update({ stock: product.stock + item.quantity }).eq("id", item.product_id);
+        }
+        const { data, error } = await supabase
+            .from("orders")
+            .update({ payment_status: "rejected", status: "cancelled", notes: reason ? `Pago rechazado: ${reason}` : "Pago YAPPI rechazado por admin", updated_at: new Date().toISOString() })
+            .eq("id", orderId).select().single();
+        if (error) throw error;
+        console.log(`❌ Admin rechazó pago YAPPI del pedido ${orderId}`);
+        res.json({ success: true, message: "Pago rechazado y stock devuelto", order: data });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ==================== ADMIN - PRODUCTOS ====================
 
 app.get("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
     try {
@@ -719,6 +701,8 @@ app.listen(PORT, () => {
 ║   🏪 VENDEDOR: CONFIGURADO             ║
 ║   📊 STOCK AUTOMÁTICO: ✅              ║
 ║   💰 PAGOS DRIVERS: ✅                 ║
+║   🗺️  START TRIP: ✅                   ║
+║   📱 YAPPI APPROVAL: ✅                ║
 ╚════════════════════════════════════════╝
     `);
 });
