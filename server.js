@@ -26,9 +26,9 @@ app.get("/", (req, res) => {
         endpoints: {
             auth: { login: "POST /auth/login", register: "POST /auth/register", profile: "GET /auth/profile", updateProfile: "PATCH /auth/profile", changePassword: "PATCH /auth/password" },
             products: "GET /products",
-            orders: { create: "POST /orders", myOrders: "GET /orders/my", cancel: "PATCH /orders/:id/cancel", pendingYappi: "POST /orders/pending-yappi", confirmYappi: "POST /orders/:id/confirm-yappi" },
+            orders: { create: "POST /orders", myOrders: "GET /orders/my", active: "GET /orders/active", cancel: "PATCH /orders/:id/cancel", pendingYappi: "POST /orders/pending-yappi", confirmYappi: "POST /orders/:id/confirm-yappi" },
             vendor: { byClient: "GET /vendor/orders/by-client", byProduct: "GET /vendor/orders/by-product", updateStatus: "PATCH /vendor/orders/:id/status" },
-            driver: { availablePackages: "GET /driver/packages/available", takePackage: "POST /driver/packages/take", myPackages: "GET /driver/packages/my", earningsPackages: "GET /driver/earnings/packages", updateOrderStatus: "PATCH /driver/orders/:orderId/status", updateLocation: "POST /driver/location", getLocation: "GET /driver/location/:orderId" },
+            driver: { availablePackages: "GET /driver/packages/available", takePackage: "POST /driver/packages/take", myPackages: "GET /driver/packages/my", earningsPackages: "GET /driver/earnings/packages", updateOrderStatus: "PATCH /driver/orders/:orderId/status", updateLocation: "POST /driver/location", getLocation: "GET /driver/location/:orderId", getLocationByDriver: "GET /driver/location/by-driver/:driverId" },
             admin: { dashboard: "GET /admin/dashboard/stats", products: "GET /admin/products", createProduct: "POST /admin/products", updateProduct: "PATCH /admin/products/:id", updateStock: "PATCH /admin/products/:id/stock", deleteProduct: "DELETE /admin/products/:id", driverPayments: "GET /admin/drivers/payments", processPayment: "POST /admin/drivers/payments/process", calculatePayment: "POST /admin/drivers/payments/calculate", inventoryLogs: "GET /admin/inventory/logs", categories: "GET /admin/categories", driversList: "GET /admin/drivers/list" },
             payments: { createIntent: "POST /payments/create-intent" }
         }
@@ -111,8 +111,15 @@ app.post("/auth/login", async (req, res) => {
 
         if (!valid) return res.status(401).json({ error: "Credenciales invalidas" });
 
+        // ✅ FIX: user_type incluido en el JWT
         const token = jwt.sign(
-            { userId: user.id, role: user.role, name: user.full_name, address: user.address },
+            {
+                userId: user.id,
+                role: user.role,
+                userType: user.user_type || "cliente",
+                name: user.full_name,
+                address: user.address
+            },
             JWT_SECRET,
             { expiresIn: "7d" }
         );
@@ -192,24 +199,11 @@ app.post("/orders", authMiddleware, async (req, res) => {
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
     if (!finalPaymentMethod) return res.status(400).json({ error: "payment_method es requerido" });
 
-    // VALIDAR STOCK ANTES DE CREAR PEDIDO
     for (const item of items) {
         const productId = item.productId || item.product_id;
-        const { data: product, error: productError } = await supabase
-            .from("products")
-            .select("stock, name")
-            .eq("id", productId)
-            .single();
-
-        if (productError || !product) {
-            return res.status(400).json({ error: `Producto no encontrado: ID ${productId}` });
-        }
-
-        if (product.stock < item.quantity) {
-            return res.status(400).json({
-                error: `Stock insuficiente para ${product.name}. Disponible: ${product.stock}, Solicitado: ${item.quantity}`
-            });
-        }
+        const { data: product, error: productError } = await supabase.from("products").select("stock, name").eq("id", productId).single();
+        if (productError || !product) return res.status(400).json({ error: `Producto no encontrado: ID ${productId}` });
+        if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente para ${product.name}. Disponible: ${product.stock}, Solicitado: ${item.quantity}` });
     }
 
     const tomorrow = new Date(Date.now() + 86400000);
@@ -222,7 +216,6 @@ app.post("/orders", authMiddleware, async (req, res) => {
     }
 
     try {
-        // Crear pedido
         const { data: order, error: orderError } = await supabase.from("orders").insert({
             user_id: req.user.userId,
             payment_method: finalPaymentMethod,
@@ -238,7 +231,6 @@ app.post("/orders", authMiddleware, async (req, res) => {
         }).select().single();
         if (orderError) throw orderError;
 
-        // Crear items del pedido
         const productPrices = {};
         for (const item of items) {
             const productId = item.productId || item.product_id;
@@ -256,23 +248,12 @@ app.post("/orders", authMiddleware, async (req, res) => {
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
 
-        // ACTUALIZAR STOCK Y REGISTRAR EN LOGS
         for (const item of items) {
             const productId = item.productId || item.product_id;
-            const { data: product } = await supabase
-                .from("products")
-                .select("stock")
-                .eq("id", productId)
-                .single();
-
+            const { data: product } = await supabase.from("products").select("stock").eq("id", productId).single();
             const previousStock = product.stock;
             const newStock = previousStock - item.quantity;
-
-            await supabase
-                .from("products")
-                .update({ stock: newStock })
-                .eq("id", productId);
-
+            await supabase.from("products").update({ stock: newStock }).eq("id", productId);
             await supabase.from("inventory_logs").insert({
                 product_id: productId,
                 previous_quantity: previousStock,
@@ -301,6 +282,37 @@ app.get("/orders/my", authMiddleware, async (req, res) => {
     } catch (e) { console.error("❌ Error obteniendo pedidos:", e.message); res.status(500).json({ error: e.message }); }
 });
 
+// ✅ NUEVO: Pedido activo del cliente para tracking
+app.get("/orders/active", authMiddleware, async (req, res) => {
+    console.log("📍 GET /orders/active");
+    try {
+        const { data, error } = await supabase
+            .from("orders")
+            .select("id, status, total_amount, driver_id, delivery_latitude, delivery_longitude")
+            .eq("user_id", req.user.userId)
+            .in("status", ["pending", "in_progress"])
+            .eq("payment_status", "completed")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .single();
+
+        if (error && error.code === "PGRST116") return res.json(null); // sin pedido activo
+        if (error) throw error;
+
+        res.json({
+            id: data.id,
+            status: data.status,
+            total: data.total_amount,
+            driver_id: data.driver_id || null,
+            delivery_lat: data.delivery_latitude || null,
+            delivery_lng: data.delivery_longitude || null
+        });
+    } catch (e) {
+        console.error("❌ Error en /orders/active:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
     console.log("❌ PATCH /orders/:id/cancel");
     try {
@@ -309,7 +321,6 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
         if (order.user_id !== req.user.userId) return res.status(403).json({ error: "No autorizado" });
         if (order.status !== "pending") return res.status(400).json({ error: "Solo se pueden cancelar pedidos pendientes" });
 
-        // Devolver stock al cancelar
         const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", order.id);
         for (const item of orderItems || []) {
             const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
@@ -339,13 +350,10 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     const finalDeliveryAddress = deliveryAddress || delivery_address;
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
 
-    // Validar stock
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product } = await supabase.from("products").select("stock").eq("id", productId).single();
-        if (product && product.stock < item.quantity) {
-            return res.status(400).json({ error: `Stock insuficiente` });
-        }
+        if (product && product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente` });
     }
 
     const referenceCode = generateReferenceCode();
@@ -392,7 +400,6 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
         if (order.reference_code !== referenceCode) return res.status(400).json({ error: "Código de referencia incorrecto" });
         if (order.payment_status !== "pending") return res.json({ success: true, message: "El pedido ya fue confirmado" });
 
-        // Descontar stock al confirmar
         const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", order.id);
         for (const item of orderItems || []) {
             const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
@@ -544,138 +551,66 @@ app.get("/driver/location/:orderId", authMiddleware, async (req, res) => {
     } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
 });
 
+// ✅ NUEVO: Ubicación del driver por driverId (para el cliente en TrackingActivity)
+app.get("/driver/location/by-driver/:driverId", authMiddleware, async (req, res) => {
+    const { driverId } = req.params;
+    try {
+        const { data: location, error } = await supabase
+            .from("driver_locations")
+            .select("latitude, longitude, updated_at")
+            .eq("driver_id", driverId)
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .single();
+
+        if (error && error.code === "PGRST116") return res.json({ latitude: null, longitude: null });
+        if (error) throw error;
+        res.json(location);
+    } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
+});
+
 // ==================== ADMIN ====================
 
 app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const today = new Date().toISOString().split("T")[0];
         const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0];
-
-        // Productos totales
-        const { count: totalProducts } = await supabase
-            .from("products")
-            .select("*", { count: "exact", head: true });
-
-        // Productos con stock bajo (stock > 0 y stock < min_stock)
-        const { data: products } = await supabase
-            .from("products")
-            .select("stock, min_stock")
-            .gt("stock", 0);
-
+        const { count: totalProducts } = await supabase.from("products").select("*", { count: "exact", head: true });
+        const { data: products } = await supabase.from("products").select("stock, min_stock").gt("stock", 0);
         const lowStockProducts = products?.filter(p => p.stock < (p.min_stock || 0)).length || 0;
-
-        // Productos agotados
-        const { count: outOfStockProducts } = await supabase
-            .from("products")
-            .select("*", { count: "exact", head: true })
-            .eq("stock", 0);
-
-        // Pedidos de hoy
-        const { data: todayOrders } = await supabase
-            .from("orders")
-            .select("total_amount")
-            .eq("delivery_date", today)
-            .eq("status", "completed");
-
+        const { count: outOfStockProducts } = await supabase.from("products").select("*", { count: "exact", head: true }).eq("stock", 0);
+        const { data: todayOrders } = await supabase.from("orders").select("total_amount").eq("delivery_date", today).eq("status", "completed");
         const totalOrdersToday = todayOrders?.length || 0;
         const totalRevenueToday = todayOrders?.reduce((sum, o) => sum + (o.total_amount || 0), 0) || 0;
-
-        // Pedidos de la semana
-        const { data: weekOrders } = await supabase
-            .from("orders")
-            .select("total_amount")
-            .gte("delivery_date", weekAgo)
-            .eq("status", "completed");
-
+        const { data: weekOrders } = await supabase.from("orders").select("total_amount").gte("delivery_date", weekAgo).eq("status", "completed");
         const totalOrdersWeek = weekOrders?.length || 0;
         const totalRevenueWeek = weekOrders?.reduce((sum, o) => sum + (o.total_amount || 0), 0) || 0;
-
-        // Total de repartidores
-        const { count: totalDrivers } = await supabase
-            .from("users")
-            .select("*", { count: "exact", head: true })
-            .eq("user_type", "driver");
-
-        // Repartidores activos
-        const { data: activeDriversData } = await supabase
-            .from("orders")
-            .select("driver_id")
-            .gte("updated_at", weekAgo)
-            .eq("status", "completed")
-            .not("driver_id", "is", null);
-
+        const { count: totalDrivers } = await supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", "driver");
+        const { data: activeDriversData } = await supabase.from("orders").select("driver_id").gte("updated_at", weekAgo).eq("status", "completed").not("driver_id", "is", null);
         const activeDrivers = new Set(activeDriversData?.map(o => o.driver_id) || []).size;
-
-        // Pagos pendientes
-        const { data: pendingPaymentsData } = await supabase
-            .from("driver_payments")
-            .select("net_amount")
-            .eq("payment_status", "pending");
-
+        const { data: pendingPaymentsData } = await supabase.from("driver_payments").select("net_amount").eq("payment_status", "pending");
         const pendingPayments = pendingPaymentsData?.reduce((sum, p) => sum + (p.net_amount || 0), 0) || 0;
-
-        res.json({
-            totalProducts: totalProducts || 0,
-            lowStockProducts: lowStockProducts,
-            outOfStockProducts: outOfStockProducts || 0,
-            totalOrdersToday: totalOrdersToday,
-            totalRevenueToday: totalRevenueToday,
-            totalOrdersWeek: totalOrdersWeek,
-            totalRevenueWeek: totalRevenueWeek,
-            totalDrivers: totalDrivers || 0,
-            activeDrivers: activeDrivers,
-            pendingPayments: pendingPayments
-        });
-
-    } catch (e) {
-        console.error("❌ Error en dashboard:", e.message);
-        res.status(500).json({ error: e.message });
-    }
+        res.json({ totalProducts: totalProducts || 0, lowStockProducts, outOfStockProducts: outOfStockProducts || 0, totalOrdersToday, totalRevenueToday, totalOrdersWeek, totalRevenueWeek, totalDrivers: totalDrivers || 0, activeDrivers, pendingPayments });
+    } catch (e) { console.error("❌ Error en dashboard:", e.message); res.status(500).json({ error: e.message }); }
 });
 
 app.get("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
     try {
         let query = supabase.from("products").select("*, categories(name)");
-
         if (req.query.category) query = query.eq("category_id", req.query.category);
         if (req.query.search) query = query.ilike("name", `%${req.query.search}%`);
-
         const { data, error } = await query;
         if (error) throw error;
-
-        // Si low_stock es true, filtrar productos con stock bajo
         let products = data || [];
-        if (req.query.low_stock === "true") {
-            products = products.filter(p => {
-                const stock = p.stock || 0;
-                const minStock = p.min_stock || 0;
-                return stock > 0 && stock < minStock;
-            });
-        }
-
-        res.json(products.map(p => ({
-            ...p,
-            category: p.categories?.name,
-            stock: p.stock || 0,
-            min_stock: p.min_stock || 0
-        })));
-
-    } catch (e) {
-        console.error("❌ Error en /admin/products:", e.message);
-        res.status(500).json({ error: e.message });
-    }
+        if (req.query.low_stock === "true") products = products.filter(p => { const stock = p.stock || 0; const minStock = p.min_stock || 0; return stock > 0 && stock < minStock; });
+        res.json(products.map(p => ({ ...p, category: p.categories?.name, stock: p.stock || 0, min_stock: p.min_stock || 0 })));
+    } catch (e) { console.error("❌ Error en /admin/products:", e.message); res.status(500).json({ error: e.message }); }
 });
 
 app.post("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
     const { name, description, price, unit, category_id, stock, min_stock, image_url } = req.body;
     try {
-        const { data, error } = await supabase.from("products").insert({
-            name, description, price, unit, category_id,
-            stock: stock || 0,
-            min_stock: min_stock || 0,
-            image_url,
-            is_available: true
-        }).select().single();
+        const { data, error } = await supabase.from("products").insert({ name, description, price, unit, category_id, stock: stock || 0, min_stock: min_stock || 0, image_url, is_available: true }).select().single();
         if (error) throw error;
         res.json(data);
     } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
@@ -704,14 +639,7 @@ app.patch("/admin/products/:id/stock", authMiddleware, adminMiddleware, async (r
         else if (change_type === "set") newQuantity = quantity;
         const { error: updateError } = await supabase.from("products").update({ stock: newQuantity }).eq("id", id);
         if (updateError) throw updateError;
-        await supabase.from("inventory_logs").insert({
-            product_id: id,
-            previous_quantity: previousQuantity,
-            new_quantity: newQuantity,
-            change_type,
-            notes,
-            created_by: req.user.userId
-        });
+        await supabase.from("inventory_logs").insert({ product_id: id, previous_quantity: previousQuantity, new_quantity: newQuantity, change_type, notes, created_by: req.user.userId });
         res.json({ success: true, message: "Stock actualizado" });
     } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
 });
@@ -724,8 +652,6 @@ app.delete("/admin/products/:id", authMiddleware, adminMiddleware, async (req, r
         res.json({ message: "Producto eliminado" });
     } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
 });
-
-// ==================== ADMIN - PAGOS DRIVERS ====================
 
 app.get("/admin/drivers/payments", authMiddleware, adminMiddleware, async (req, res) => {
     try {
@@ -741,10 +667,7 @@ app.get("/admin/drivers/payments", authMiddleware, adminMiddleware, async (req, 
 app.post("/admin/drivers/payments/process", authMiddleware, adminMiddleware, async (req, res) => {
     const { payment_id, payment_status } = req.body;
     try {
-        const { error } = await supabase.from("driver_payments").update({
-            payment_status,
-            paid_at: payment_status === "paid" ? new Date().toISOString() : null
-        }).eq("id", payment_id);
+        const { error } = await supabase.from("driver_payments").update({ payment_status, paid_at: payment_status === "paid" ? new Date().toISOString() : null }).eq("id", payment_id);
         if (error) throw error;
         res.json({ message: "Pago procesado" });
     } catch (e) { console.error("❌ Error:", e.message); res.status(500).json({ error: e.message }); }
@@ -752,59 +675,21 @@ app.post("/admin/drivers/payments/process", authMiddleware, adminMiddleware, asy
 
 app.post("/admin/drivers/payments/calculate", authMiddleware, adminMiddleware, async (req, res) => {
     const { driver_id, week_start } = req.body;
-    if (!driver_id || !week_start) {
-        return res.status(400).json({ error: "driver_id y week_start son requeridos" });
-    }
-
+    if (!driver_id || !week_start) return res.status(400).json({ error: "driver_id y week_start son requeridos" });
     try {
         const weekEnd = new Date(week_start);
         weekEnd.setDate(weekEnd.getDate() + 6);
-        const weekEndStr = weekEnd.toISOString().split("T")[0];
-
-        const { data: orders, error: ordersError } = await supabase
-            .from("orders")
-            .select("id, tip_amount, total_amount")
-            .eq("driver_id", driver_id)
-            .eq("status", "completed")
-            .gte("updated_at", week_start)
-            .lte("updated_at", weekEnd.toISOString());
-
+        const { data: orders, error: ordersError } = await supabase.from("orders").select("id, tip_amount, total_amount").eq("driver_id", driver_id).eq("status", "completed").gte("updated_at", week_start).lte("updated_at", weekEnd.toISOString());
         if (ordersError) throw ordersError;
-
         const totalOrders = orders?.length || 0;
         const totalBasePayment = totalOrders * 2.50;
         const totalTips = orders?.reduce((sum, o) => sum + (o.tip_amount || 0), 0) || 0;
         const platformCommission = totalBasePayment * 0.10;
         const netAmount = totalBasePayment * 0.90 + totalTips;
-
-        const { data: payment, error: upsertError } = await supabase
-            .from("driver_payments")
-            .upsert({
-                driver_id,
-                week_start,
-                week_end: weekEndStr,
-                total_orders: totalOrders,
-                total_base_payment: totalBasePayment,
-                total_tips: totalTips,
-                platform_commission: platformCommission,
-                net_amount: netAmount,
-                payment_status: "pending"
-            }, { onConflict: "driver_id,week_start" })
-            .select()
-            .single();
-
+        const { data: payment, error: upsertError } = await supabase.from("driver_payments").upsert({ driver_id, week_start, week_end: weekEnd.toISOString().split("T")[0], total_orders: totalOrders, total_base_payment: totalBasePayment, total_tips: totalTips, platform_commission: platformCommission, net_amount: netAmount, payment_status: "pending" }, { onConflict: "driver_id,week_start" }).select().single();
         if (upsertError) throw upsertError;
-
-        res.json({
-            success: true,
-            payment: payment,
-            total_orders: totalOrders,
-            net_amount: netAmount
-        });
-    } catch (e) {
-        console.error("❌ Error calculando pago:", e.message);
-        res.status(500).json({ error: e.message });
-    }
+        res.json({ success: true, payment, total_orders: totalOrders, net_amount: netAmount });
+    } catch (e) { console.error("❌ Error calculando pago:", e.message); res.status(500).json({ error: e.message }); }
 });
 
 app.get("/admin/inventory/logs", authMiddleware, adminMiddleware, async (req, res) => {
@@ -853,9 +738,7 @@ app.get("/debug/users", async (req, res) => {
         const { data, error } = await supabase.from("users").select("id, email, full_name, role, user_type, password_hash");
         if (error) throw error;
         res.json(data);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== START ====================
