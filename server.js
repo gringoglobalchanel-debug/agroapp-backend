@@ -16,7 +16,8 @@ app.use((req, res, next) => {
 
 app.use(cors());
 app.use(helmet());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 app.get("/", (req, res) => {
     res.json({ message: "🌱 API de AgroApp funcionando correctamente", version: "1.0.0", status: "online" });
@@ -91,13 +92,13 @@ app.post("/auth/login", async (req, res) => {
             { userId: user.id, role: user.role, userType: user.user_type || "cliente", name: user.full_name, address: user.address },
             JWT_SECRET, { expiresIn: "7d" }
         );
-        res.json({ token, userId: user.id, name: user.full_name, role: user.role, address: user.address, user_type: user.user_type || "cliente" });
+        res.json({ token, userId: user.id, name: user.full_name, role: user.role, address: user.address, user_type: user.user_type || "cliente", avatar_url: user.avatar_url || null });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/auth/profile", authMiddleware, async (req, res) => {
     try {
-        const { data, error } = await supabase.from("users").select("id, full_name, email, phone, address, role, user_type").eq("id", req.user.userId).single();
+        const { data, error } = await supabase.from("users").select("id, full_name, email, phone, address, role, user_type, avatar_url").eq("id", req.user.userId).single();
         if (error) throw error;
         res.json(data);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -125,6 +126,34 @@ app.patch("/auth/password", authMiddleware, async (req, res) => {
         const { error: updateError } = await supabase.from("users").update({ password_hash: hashed }).eq("id", req.user.userId);
         if (updateError) throw updateError;
         res.json({ message: "Contraseña actualizada correctamente" });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ==================== AVATAR ====================
+
+app.post("/auth/avatar", authMiddleware, async (req, res) => {
+    const { imageBase64, mimeType } = req.body;
+    if (!imageBase64) return res.status(400).json({ error: "imageBase64 es requerido" });
+    try {
+        const userId = req.user.userId;
+        const fileName = `avatar_${userId}_${Date.now()}.jpg`;
+        const fileBuffer = Buffer.from(imageBase64, 'base64');
+        const contentType = mimeType || 'image/jpeg';
+        const { error: uploadError } = await supabase.storage.from('avatars').upload(fileName, fileBuffer, { contentType, upsert: true });
+        if (uploadError) throw uploadError;
+        const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
+        const avatarUrl = urlData.publicUrl;
+        const { error: updateError } = await supabase.from('users').update({ avatar_url: avatarUrl }).eq('id', userId);
+        if (updateError) throw updateError;
+        res.json({ success: true, avatar_url: avatarUrl });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/users/:userId/avatar", authMiddleware, async (req, res) => {
+    try {
+        const { data, error } = await supabase.from("users").select("avatar_url, full_name").eq("id", req.params.userId).single();
+        if (error) throw error;
+        res.json({ avatar_url: data.avatar_url || null, full_name: data.full_name });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -157,12 +186,14 @@ app.post("/orders", authMiddleware, async (req, res) => {
     }
     const tomorrow = new Date(Date.now() + 86400000);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
+    // ✅ Total sin envío: solo productos + propina
     let totalAmount = 0;
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
         if (product) totalAmount += product.price * item.quantity;
     }
+    totalAmount += finalTipAmount;
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
             user_id: req.user.userId, payment_method: finalPaymentMethod, payment_status: "completed",
@@ -238,8 +269,9 @@ function generateReferenceCode() {
 }
 
 app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
-    const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude } = req.body;
+    const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, tip_amount } = req.body;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
+    const finalTipAmount = tip_amount || 0;
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
     for (const item of items) {
         const productId = item.productId || item.product_id;
@@ -250,11 +282,18 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     const referenceCode = generateReferenceCode();
     const tomorrow = new Date(Date.now() + 86400000);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
+    // ✅ Total sin envío
     let totalAmount = 0;
+    const productPrices = {};
     for (const item of items) {
-        const { data: product } = await supabase.from("products").select("price").eq("id", item.productId || item.product_id).single();
-        if (product) totalAmount += product.price * item.quantity;
+        const productId = item.productId || item.product_id;
+        const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
+        if (product) {
+            productPrices[productId] = product.price;
+            totalAmount += product.price * item.quantity;
+        }
     }
+    totalAmount += finalTipAmount;
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
             user_id: req.user.userId,
@@ -265,15 +304,16 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
             delivery_longitude: delivery_longitude || null,
             delivery_date: deliveryDate,
             total_amount: totalAmount,
+            tip_amount: finalTipAmount,
             reference_code: referenceCode,
-            status: "waiting_confirmation"   // ✅ Esperando confirmación
+            status: "waiting_confirmation"
         }).select().single();
         if (orderError) throw orderError;
         const orderItems = items.map(item => ({
             order_id: order.id,
             product_id: item.productId || item.product_id,
             quantity: item.quantity,
-            unit_price: item.price || 0
+            unit_price: productPrices[item.productId || item.product_id] || 0
         }));
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
@@ -282,62 +322,32 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
 });
 
 app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
-    const { referenceCode } = req.body;
     try {
         const { data: order, error } = await supabase.from("orders").select("*").eq("id", req.params.id).single();
         if (error || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.user_id !== req.user.userId) return res.status(403).json({ error: "No autorizado" });
         if (order.payment_status === "pending_approval" || order.payment_status === "completed") return res.json({ success: true, message: "Pedido ya enviado a revisión" });
-        await supabase.from("orders").update({
-            payment_status: "pending_approval",
-            status: "pending_approval",
-            payment_confirmed_at: new Date().toISOString()
-        }).eq("id", order.id);
-        res.json({ success: true, message: "Pago enviado a revisión. El admin lo aprobará en breve.", orderId: order.id });
+        await supabase.from("orders").update({ payment_status: "pending_approval", status: "pending_approval", payment_confirmed_at: new Date().toISOString() }).eq("id", order.id);
+        res.json({ success: true, message: "Pago enviado a revisión.", orderId: order.id });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== ADMIN - YAPPI PENDIENTES ====================
+// ==================== ADMIN - YAPPI ====================
 
 app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res) => {
     try {
-        const { data, error } = await supabase
-            .from("orders")
-            .select("id, total_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, users!orders_user_id_fkey(full_name, phone, email)")
-            .eq("payment_method", "yappi")
-            .in("status", ["waiting_confirmation", "pending_approval"])
-            .order("created_at", { ascending: false });
+        const { data, error } = await supabase.from("orders").select("id, total_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, users!orders_user_id_fkey(full_name, phone, email)").eq("payment_method", "yappi").in("status", ["waiting_confirmation", "pending_approval"]).order("created_at", { ascending: false });
         if (error) throw error;
-        res.json(data.map(o => ({
-            id: o.id,
-            total_amount: o.total_amount,
-            reference_code: o.reference_code,
-            created_at: o.created_at,
-            payment_confirmed_at: o.payment_confirmed_at,
-            delivery_address: o.delivery_address,
-            status: o.status,
-            customer_name: o.users?.full_name || "Cliente",
-            customer_phone: o.users?.phone || "",
-            customer_email: o.users?.email || ""
-        })));
+        res.json(data.map(o => ({ id: o.id, total_amount: o.total_amount, reference_code: o.reference_code, created_at: o.created_at, payment_confirmed_at: o.payment_confirmed_at, delivery_address: o.delivery_address, status: o.status, customer_name: o.users?.full_name || "Cliente", customer_phone: o.users?.phone || "", customer_email: o.users?.email || "" })));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
     try {
-        const { data, error } = await supabase
-            .from("orders")
-            .update({
-                payment_status: "completed",
-                status: "pending",   // ✅ Al aprobar pasa a Pendiente
-                updated_at: new Date().toISOString()
-            })
-            .eq("id", orderId)
-            .select().single();
+        const { data, error } = await supabase.from("orders").update({ payment_status: "completed", status: "pending", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
         if (error) throw error;
         if (!data) return res.status(404).json({ error: "Pedido no encontrado o ya procesado" });
-        console.log(`✅ Admin aprobó pago YAPPI del pedido ${orderId}`);
         res.json({ success: true, message: "Pago YAPPI aprobado", order: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -351,17 +361,8 @@ app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async 
             const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
             if (product) await supabase.from("products").update({ stock: product.stock + item.quantity }).eq("id", item.product_id);
         }
-        const { data, error } = await supabase
-            .from("orders")
-            .update({
-                payment_status: "rejected",
-                status: "cancelled",
-                notes: reason ? `Pago rechazado: ${reason}` : "Pago YAPPI rechazado por admin",
-                updated_at: new Date().toISOString()
-            })
-            .eq("id", orderId).select().single();
+        const { data, error } = await supabase.from("orders").update({ payment_status: "rejected", status: "cancelled", notes: reason ? `Pago rechazado: ${reason}` : "Pago YAPPI rechazado por admin", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
         if (error) throw error;
-        console.log(`❌ Admin rechazó pago YAPPI del pedido ${orderId}`);
         res.json({ success: true, message: "Pago rechazado y stock devuelto", order: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -478,8 +479,6 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== DRIVER - INICIAR VIAJE ====================
-
 app.post("/driver/orders/:orderId/start-trip", authMiddleware, driverMiddleware, async (req, res) => {
     const { orderId } = req.params;
     try {
@@ -489,12 +488,9 @@ app.post("/driver/orders/:orderId/start-trip", authMiddleware, driverMiddleware,
         if (order.status === "in_progress") return res.json({ success: true, message: "Ya en camino" });
         const { data: updated, error: updateError } = await supabase.from("orders").update({ status: "in_progress", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
         if (updateError) throw updateError;
-        console.log(`🚴 Driver ${req.user.userId} inició viaje para pedido ${orderId}`);
         res.json({ success: true, order: updated });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-// ==================== DRIVER - UBICACIÓN ====================
 
 app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) => {
     const { orderId, latitude, longitude } = req.body;
@@ -511,12 +507,17 @@ app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) 
 app.get("/driver/location/:orderId", authMiddleware, async (req, res) => {
     const { orderId } = req.params;
     try {
-        const { data: order, error: orderError } = await supabase.from("orders").select("user_id").eq("id", orderId).single();
+        const { data: order, error: orderError } = await supabase.from("orders").select("user_id, driver_id").eq("id", orderId).single();
         if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.user_id !== req.user.userId) return res.status(403).json({ error: "No autorizado" });
         const { data: location, error: locationError } = await supabase.from("driver_locations").select("latitude, longitude, updated_at").eq("order_id", orderId).single();
         if (locationError && locationError.code !== 'PGRST116') throw locationError;
-        res.json(location || {});
+        let driverInfo = { driver_name: null, driver_avatar: null };
+        if (order.driver_id) {
+            const { data: driver } = await supabase.from("users").select("full_name, avatar_url").eq("id", order.driver_id).single();
+            if (driver) { driverInfo.driver_name = driver.full_name; driverInfo.driver_avatar = driver.avatar_url || null; }
+        }
+        res.json({ ...(location || {}), ...driverInfo });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -722,6 +723,8 @@ app.listen(PORT, () => {
 ║   💰 PAGOS DRIVERS: ✅                 ║
 ║   🗺️  START TRIP: ✅                   ║
 ║   📱 YAPPI APPROVAL: ✅                ║
+║   📸 AVATARS: ✅                       ║
+║   🚚 ENVÍO GRATIS: ✅                  ║
 ╚════════════════════════════════════════╝
     `);
 });
