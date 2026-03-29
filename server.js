@@ -214,7 +214,7 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
         const { data: order, error: fetchError } = await supabase.from("orders").select("*").eq("id", req.params.id).single();
         if (fetchError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.user_id !== req.user.userId) return res.status(403).json({ error: "No autorizado" });
-        if (order.status !== "pending") return res.status(400).json({ error: "Solo se pueden cancelar pedidos pendientes" });
+        if (order.status !== "pending" && order.status !== "waiting_confirmation") return res.status(400).json({ error: "Solo se pueden cancelar pedidos pendientes" });
         const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", order.id);
         for (const item of orderItems || []) {
             const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
@@ -266,7 +266,7 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
             delivery_date: deliveryDate,
             total_amount: totalAmount,
             reference_code: referenceCode,
-            status: "pending"
+            status: "waiting_confirmation"   // ✅ Esperando confirmación
         }).select().single();
         if (orderError) throw orderError;
         const orderItems = items.map(item => ({
@@ -287,15 +287,82 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
         const { data: order, error } = await supabase.from("orders").select("*").eq("id", req.params.id).single();
         if (error || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.user_id !== req.user.userId) return res.status(403).json({ error: "No autorizado" });
-        if (order.reference_code !== referenceCode) return res.status(400).json({ error: "Código de referencia incorrecto" });
         if (order.payment_status === "pending_approval" || order.payment_status === "completed") return res.json({ success: true, message: "Pedido ya enviado a revisión" });
-        const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", order.id);
+        await supabase.from("orders").update({
+            payment_status: "pending_approval",
+            status: "pending_approval",
+            payment_confirmed_at: new Date().toISOString()
+        }).eq("id", order.id);
+        res.json({ success: true, message: "Pago enviado a revisión. El admin lo aprobará en breve.", orderId: order.id });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ==================== ADMIN - YAPPI PENDIENTES ====================
+
+app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from("orders")
+            .select("id, total_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, users!orders_user_id_fkey(full_name, phone, email)")
+            .eq("payment_method", "yappi")
+            .in("status", ["waiting_confirmation", "pending_approval"])
+            .order("created_at", { ascending: false });
+        if (error) throw error;
+        res.json(data.map(o => ({
+            id: o.id,
+            total_amount: o.total_amount,
+            reference_code: o.reference_code,
+            created_at: o.created_at,
+            payment_confirmed_at: o.payment_confirmed_at,
+            delivery_address: o.delivery_address,
+            status: o.status,
+            customer_name: o.users?.full_name || "Cliente",
+            customer_phone: o.users?.phone || "",
+            customer_email: o.users?.email || ""
+        })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async (req, res) => {
+    const { orderId } = req.params;
+    try {
+        const { data, error } = await supabase
+            .from("orders")
+            .update({
+                payment_status: "completed",
+                status: "pending",   // ✅ Al aprobar pasa a Pendiente
+                updated_at: new Date().toISOString()
+            })
+            .eq("id", orderId)
+            .select().single();
+        if (error) throw error;
+        if (!data) return res.status(404).json({ error: "Pedido no encontrado o ya procesado" });
+        console.log(`✅ Admin aprobó pago YAPPI del pedido ${orderId}`);
+        res.json({ success: true, message: "Pago YAPPI aprobado", order: data });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async (req, res) => {
+    const { orderId } = req.params;
+    const { reason } = req.body;
+    try {
+        const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", orderId);
         for (const item of orderItems || []) {
             const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
-            await supabase.from("products").update({ stock: product.stock - item.quantity }).eq("id", item.product_id);
+            if (product) await supabase.from("products").update({ stock: product.stock + item.quantity }).eq("id", item.product_id);
         }
-        await supabase.from("orders").update({ payment_status: "pending_approval", status: "pending_approval", payment_confirmed_at: new Date().toISOString() }).eq("id", order.id);
-        res.json({ success: true, message: "Pago enviado a revisión. El admin lo aprobará en breve.", orderId: order.id });
+        const { data, error } = await supabase
+            .from("orders")
+            .update({
+                payment_status: "rejected",
+                status: "cancelled",
+                notes: reason ? `Pago rechazado: ${reason}` : "Pago YAPPI rechazado por admin",
+                updated_at: new Date().toISOString()
+            })
+            .eq("id", orderId).select().single();
+        if (error) throw error;
+        console.log(`❌ Admin rechazó pago YAPPI del pedido ${orderId}`);
+        res.json({ success: true, message: "Pago rechazado y stock devuelto", order: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -484,68 +551,8 @@ app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, r
         const activeDrivers = new Set(activeDriversData?.map(o => o.driver_id) || []).size;
         const { data: pendingPaymentsData } = await supabase.from("driver_payments").select("net_amount").eq("payment_status", "pending");
         const pendingPayments = pendingPaymentsData?.reduce((sum, p) => sum + (p.net_amount || 0), 0) || 0;
-        const { count: pendingYappiApprovals } = await supabase.from("orders").select("*", { count: "exact", head: true }).eq("payment_status", "pending_approval").eq("payment_method", "yappi");
+        const { count: pendingYappiApprovals } = await supabase.from("orders").select("*", { count: "exact", head: true }).in("status", ["waiting_confirmation", "pending_approval"]).eq("payment_method", "yappi");
         res.json({ totalProducts: totalProducts || 0, lowStockProducts, outOfStockProducts: outOfStockProducts || 0, totalOrdersToday, totalRevenueToday, totalOrdersWeek, totalRevenueWeek, totalDrivers: totalDrivers || 0, activeDrivers, pendingPayments, pendingYappiApprovals: pendingYappiApprovals || 0 });
-    } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ==================== ADMIN - YAPPI PENDIENTES ====================
-
-app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from("orders")
-            .select("id, total_amount, reference_code, created_at, payment_confirmed_at, delivery_address, users!orders_user_id_fkey(full_name, phone, email)")
-            .eq("payment_method", "yappi")
-            .eq("payment_status", "pending_approval")
-            .order("created_at", { ascending: false });
-        if (error) throw error;
-        res.json(data.map(o => ({
-            id: o.id,
-            total_amount: o.total_amount,
-            reference_code: o.reference_code,
-            created_at: o.created_at,
-            payment_confirmed_at: o.payment_confirmed_at,
-            delivery_address: o.delivery_address,
-            customer_name: o.users?.full_name || "Cliente",
-            customer_phone: o.users?.phone || "",
-            customer_email: o.users?.email || ""
-        })));
-    } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async (req, res) => {
-    const { orderId } = req.params;
-    try {
-        const { data, error } = await supabase
-            .from("orders")
-            .update({ payment_status: "completed", status: "confirmed", updated_at: new Date().toISOString() })
-            .eq("id", orderId)
-            .eq("payment_status", "pending_approval")
-            .select().single();
-        if (error) throw error;
-        if (!data) return res.status(404).json({ error: "Pedido no encontrado o ya procesado" });
-        console.log(`✅ Admin aprobó pago YAPPI del pedido ${orderId}`);
-        res.json({ success: true, message: "Pago YAPPI aprobado", order: data });
-    } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async (req, res) => {
-    const { orderId } = req.params;
-    const { reason } = req.body;
-    try {
-        const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", orderId);
-        for (const item of orderItems || []) {
-            const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
-            if (product) await supabase.from("products").update({ stock: product.stock + item.quantity }).eq("id", item.product_id);
-        }
-        const { data, error } = await supabase
-            .from("orders")
-            .update({ payment_status: "rejected", status: "cancelled", notes: reason ? `Pago rechazado: ${reason}` : "Pago YAPPI rechazado por admin", updated_at: new Date().toISOString() })
-            .eq("id", orderId).select().single();
-        if (error) throw error;
-        console.log(`❌ Admin rechazó pago YAPPI del pedido ${orderId}`);
-        res.json({ success: true, message: "Pago rechazado y stock devuelto", order: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
