@@ -1,4 +1,4 @@
-﻿const express = require("express");
+const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -116,16 +116,16 @@ app.patch("/auth/profile", authMiddleware, async (req, res) => {
 app.patch("/auth/password", authMiddleware, async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword) return res.status(400).json({ error: "Faltan campos" });
-    if (newPassword.length < 6) return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
+    if (newPassword.length < 6) return res.status(400).json({ error: "La contrasena debe tener al menos 6 caracteres" });
     try {
         const { data: user, error } = await supabase.from("users").select("*").eq("id", req.user.userId).single();
         if (error || !user) return res.status(404).json({ error: "Usuario no encontrado" });
         const valid = await bcrypt.compare(currentPassword, user.password_hash);
-        if (!valid) return res.status(401).json({ error: "Contraseña actual incorrecta" });
+        if (!valid) return res.status(401).json({ error: "Contrasena actual incorrecta" });
         const hashed = await bcrypt.hash(newPassword, 10);
         const { error: updateError } = await supabase.from("users").update({ password_hash: hashed }).eq("id", req.user.userId);
         if (updateError) throw updateError;
-        res.json({ message: "Contraseña actualizada correctamente" });
+        res.json({ message: "Contrasena actualizada correctamente" });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -186,7 +186,6 @@ app.post("/orders", authMiddleware, async (req, res) => {
     }
     const tomorrow = new Date(Date.now() + 86400000);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
-    // ✅ Total sin envío: solo productos + propina
     let totalAmount = 0;
     for (const item of items) {
         const productId = item.productId || item.product_id;
@@ -282,7 +281,6 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     const referenceCode = generateReferenceCode();
     const tomorrow = new Date(Date.now() + 86400000);
     const deliveryDate = tomorrow.toISOString().split("T")[0];
-    // ✅ Total sin envío
     let totalAmount = 0;
     const productPrices = {};
     for (const item of items) {
@@ -326,9 +324,9 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
         const { data: order, error } = await supabase.from("orders").select("*").eq("id", req.params.id).single();
         if (error || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.user_id !== req.user.userId) return res.status(403).json({ error: "No autorizado" });
-        if (order.payment_status === "pending_approval" || order.payment_status === "completed") return res.json({ success: true, message: "Pedido ya enviado a revisión" });
+        if (order.payment_status === "pending_approval" || order.payment_status === "completed") return res.json({ success: true, message: "Pedido ya enviado a revision" });
         await supabase.from("orders").update({ payment_status: "pending_approval", status: "pending_approval", payment_confirmed_at: new Date().toISOString() }).eq("id", order.id);
-        res.json({ success: true, message: "Pago enviado a revisión.", orderId: order.id });
+        res.json({ success: true, message: "Pago enviado a revision.", orderId: order.id });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -336,9 +334,21 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
 
 app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res) => {
     try {
-        const { data, error } = await supabase.from("orders").select("id, total_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, users!orders_user_id_fkey(full_name, phone, email)").eq("payment_method", "yappi").in("status", ["waiting_confirmation", "pending_approval"]).order("created_at", { ascending: false });
+        const { data, error } = await supabase.from("orders").select("id, total_amount, tip_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, users!orders_user_id_fkey(full_name, phone, email)").eq("payment_method", "yappi").in("status", ["waiting_confirmation", "pending_approval"]).order("created_at", { ascending: false });
         if (error) throw error;
-        res.json(data.map(o => ({ id: o.id, total_amount: o.total_amount, reference_code: o.reference_code, created_at: o.created_at, payment_confirmed_at: o.payment_confirmed_at, delivery_address: o.delivery_address, status: o.status, customer_name: o.users?.full_name || "Cliente", customer_phone: o.users?.phone || "", customer_email: o.users?.email || "" })));
+        res.json(data.map(o => ({
+            id: o.id,
+            total_amount: o.total_amount,
+            tip_amount: o.tip_amount || 0,
+            reference_code: o.reference_code,
+            created_at: o.created_at,
+            payment_confirmed_at: o.payment_confirmed_at,
+            delivery_address: o.delivery_address,
+            status: o.status,
+            customer_name: o.users?.full_name || "Cliente",
+            customer_phone: o.users?.phone || "",
+            customer_email: o.users?.email || ""
+        })));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -466,7 +476,7 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
     try {
         const { data: order, error: orderError } = await supabase.from("orders").select("id, dynamic_package_id, driver_id, status, tip_amount").eq("id", orderId).single();
         if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
-        if (!order.dynamic_package_id) return res.status(400).json({ error: "Este pedido no está asignado a ningún paquete" });
+        if (!order.dynamic_package_id) return res.status(400).json({ error: "Este pedido no esta asignado a ningun paquete" });
         const { data: pkg, error: pkgError } = await supabase.from("dynamic_packages").select("id, taken_by").eq("id", order.dynamic_package_id).single();
         if (pkgError || !pkg) return res.status(403).json({ error: "Paquete no encontrado" });
         if (pkg.taken_by !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido asignado" });
@@ -687,10 +697,15 @@ app.get("/admin/drivers/list", authMiddleware, adminMiddleware, async (req, res)
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     try {
         const { amount, currency = 'usd' } = req.body;
-        if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto inválido' });
+        console.log(`💳 Stripe create-intent: amount=${amount} currency=${currency} key=${process.env.STRIPE_SECRET_KEY?.substring(0,12)}...`);
+        if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto invalido' });
         const paymentIntent = await stripe.paymentIntents.create({ amount, currency, metadata: { userId: req.user.userId } });
+        console.log(`✅ PaymentIntent creado: ${paymentIntent.id}`);
         res.json({ clientSecret: paymentIntent.client_secret });
-    } catch (error) { res.status(500).json({ error: 'Error al procesar el pago' }); }
+    } catch (error) {
+        console.error('❌ Stripe error:', error.message, error.type, error.code);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ==================== DEBUG ====================
@@ -719,12 +734,12 @@ app.listen(PORT, () => {
 ║   📍 TRACKING: CONFIGURADO             ║
 ║   👑 ADMIN: CONFIGURADO                ║
 ║   🏪 VENDEDOR: CONFIGURADO             ║
-║   📊 STOCK AUTOMÁTICO: ✅              ║
+║   📊 STOCK AUTOMATICO: ✅              ║
 ║   💰 PAGOS DRIVERS: ✅                 ║
 ║   🗺️  START TRIP: ✅                   ║
 ║   📱 YAPPI APPROVAL: ✅                ║
 ║   📸 AVATARS: ✅                       ║
-║   🚚 ENVÍO GRATIS: ✅                  ║
+║   🚚 ENVIO GRATIS: ✅                  ║
 ╚════════════════════════════════════════╝
     `);
 });
