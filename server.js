@@ -355,26 +355,85 @@ app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res
 app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
     try {
-        const { data, error } = await supabase.from("orders").update({ payment_status: "completed", status: "pending", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
-        if (error) throw error;
+        console.log(`✅ Aprobando pago YAPPI: ${orderId}`);
+        const { data, error } = await supabase.from("orders")
+            .update({ payment_status: "completed", status: "pending", updated_at: new Date().toISOString() })
+            .eq("id", orderId)
+            .select()
+            .single();
+        if (error) { console.error("❌ Error aprobando:", error.message); throw error; }
         if (!data) return res.status(404).json({ error: "Pedido no encontrado o ya procesado" });
+        console.log(`✅ Pago aprobado OK: ${orderId}`);
         res.json({ success: true, message: "Pago YAPPI aprobado", order: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ✅ Reject robusto con logging y sin .single() que falla silenciosamente
 app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
     const { reason } = req.body;
+    console.log(`❌ Rechazando pago YAPPI: ${orderId}, motivo: ${reason}`);
     try {
-        const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", orderId);
-        for (const item of orderItems || []) {
-            const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
-            if (product) await supabase.from("products").update({ stock: product.stock + item.quantity }).eq("id", item.product_id);
+        // Verificar que el pedido existe
+        const { data: existingOrder, error: fetchError } = await supabase
+            .from("orders")
+            .select("id, status, payment_status")
+            .eq("id", orderId)
+            .single();
+
+        if (fetchError || !existingOrder) {
+            console.error("❌ Pedido no encontrado:", orderId);
+            return res.status(404).json({ error: "Pedido no encontrado" });
         }
-        const { data, error } = await supabase.from("orders").update({ payment_status: "rejected", status: "cancelled", notes: reason ? `Pago rechazado: ${reason}` : "Pago YAPPI rechazado por admin", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
-        if (error) throw error;
-        res.json({ success: true, message: "Pago rechazado y stock devuelto", order: data });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+
+        console.log(`📋 Estado actual: status=${existingOrder.status}, payment=${existingOrder.payment_status}`);
+
+        // Devolver stock
+        const { data: orderItems } = await supabase
+            .from("order_items")
+            .select("product_id, quantity")
+            .eq("order_id", orderId);
+
+        for (const item of orderItems || []) {
+            const { data: product } = await supabase
+                .from("products")
+                .select("stock")
+                .eq("id", item.product_id)
+                .single();
+            if (product) {
+                await supabase.from("products")
+                    .update({ stock: product.stock + item.quantity })
+                    .eq("id", item.product_id);
+            }
+        }
+
+        // Actualizar el pedido — sin .single() para evitar error si no hay resultado
+        const rejectNote = reason
+            ? `Pago rechazado: ${reason}`
+            : "Pago YAPPI rechazado por administrador";
+
+        const { data, error } = await supabase
+            .from("orders")
+            .update({
+                payment_status: "rejected",
+                status: "cancelled",
+                notes: rejectNote,
+                updated_at: new Date().toISOString()
+            })
+            .eq("id", orderId)
+            .select();
+
+        if (error) {
+            console.error("❌ Error al rechazar:", error.message);
+            throw error;
+        }
+
+        console.log(`✅ Pago rechazado OK: ${orderId}, registros afectados: ${data?.length}`);
+        res.json({ success: true, message: "Pago rechazado y stock devuelto", rejectedNote: rejectNote });
+    } catch (e) {
+        console.error("❌ Exception en reject:", e.message);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ==================== VENDEDOR ====================
@@ -734,12 +793,6 @@ app.listen(PORT, () => {
 ║   📍 TRACKING: CONFIGURADO             ║
 ║   👑 ADMIN: CONFIGURADO                ║
 ║   🏪 VENDEDOR: CONFIGURADO             ║
-║   📊 STOCK AUTOMATICO: ✅              ║
-║   💰 PAGOS DRIVERS: ✅                 ║
-║   🗺️  START TRIP: ✅                   ║
-║   📱 YAPPI APPROVAL: ✅                ║
-║   📸 AVATARS: ✅                       ║
-║   🚚 ENVIO GRATIS: ✅                  ║
 ╚════════════════════════════════════════╝
     `);
 });
