@@ -626,6 +626,25 @@ app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, r
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== ADMIN - UPLOAD IMAGEN PRODUCTO ====================
+
+app.post("/admin/products/upload-image", authMiddleware, adminMiddleware, async (req, res) => {
+    const { imageBase64, mimeType } = req.body;
+    if (!imageBase64) return res.status(400).json({ error: "imageBase64 es requerido" });
+    try {
+        const fileName = `product_${Date.now()}.jpg`;
+        const fileBuffer = Buffer.from(imageBase64, 'base64');
+        const contentType = mimeType || 'image/jpeg';
+        const { error: uploadError } = await supabase.storage.from('products').upload(fileName, fileBuffer, { contentType, upsert: true });
+        if (uploadError) throw uploadError;
+        const { data: urlData } = supabase.storage.from('products').getPublicUrl(fileName);
+        res.json({ success: true, image_url: urlData.publicUrl });
+    } catch (e) {
+        console.error('Error subiendo imagen producto:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ==================== ADMIN - PRODUCTOS ====================
 
 app.get("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
