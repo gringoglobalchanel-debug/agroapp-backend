@@ -304,7 +304,7 @@ app.post("/auth/avatar", authMiddleware, async (req, res) => {
         const fileBuffer = Buffer.from(imageBase64, 'base64');
         const contentType = mimeType || 'image/jpeg';
         const { error: uploadError } = await supabase.storage.from('avatars').upload(fileName, fileBuffer, { contentType, upsert: true });
-        if (uploadError) throw uploadError;
+        if (uploadError) { console.error('? Error subiendo imagen:', JSON.stringify(uploadError)); throw uploadError; }
         const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
         const avatarUrl = urlData.publicUrl;
         const { error: updateError } = await supabase.from('users').update({ avatar_url: avatarUrl }).eq('id', userId);
@@ -876,7 +876,7 @@ app.post("/admin/products/upload-image", authMiddleware, adminMiddleware, async 
         const fileBuffer = Buffer.from(imageBase64, 'base64');
         const contentType = mimeType || 'image/jpeg';
         const { error: uploadError } = await supabase.storage.from('product-images').upload(fileName, fileBuffer, { contentType, upsert: true });
-        if (uploadError) throw uploadError;
+        if (uploadError) { console.error('? Error subiendo imagen:', JSON.stringify(uploadError)); throw uploadError; }
         const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(fileName);
         res.json({ success: true, image_url: urlData.publicUrl });
     } catch (e) { res.status(500).json({ error: e.message }); }
