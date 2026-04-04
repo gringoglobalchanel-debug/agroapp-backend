@@ -875,9 +875,9 @@ app.post("/admin/products/upload-image", authMiddleware, adminMiddleware, async 
         const fileName = `product_${Date.now()}.jpg`;
         const fileBuffer = Buffer.from(imageBase64, 'base64');
         const contentType = mimeType || 'image/jpeg';
-        const { error: uploadError } = await supabase.storage.from('products').upload(fileName, fileBuffer, { contentType, upsert: true });
+        const { error: uploadError } = await supabase.storage.from('product-images').upload(fileName, fileBuffer, { contentType, upsert: true });
         if (uploadError) throw uploadError;
-        const { data: urlData } = supabase.storage.from('products').getPublicUrl(fileName);
+        const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(fileName);
         res.json({ success: true, image_url: urlData.publicUrl });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
