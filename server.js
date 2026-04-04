@@ -337,7 +337,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
     const { items, paymentMethod, payment_method, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, notes, tip_amount } = req.body;
     const finalPaymentMethod = paymentMethod || payment_method;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
-    const finalTipAmount = tip_amount || 0;
+    const finalTipAmount = tip_amount || 0; console.log(`?? tip_amount recibido: ${tip_amount}, finalTipAmount: ${finalTipAmount}`);
     const finalLatitude = delivery_latitude || null;
     const finalLongitude = delivery_longitude || null;
 
@@ -455,7 +455,7 @@ function generateReferenceCode() {
 app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, tip_amount } = req.body;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
-    const finalTipAmount = tip_amount || 0;
+    const finalTipAmount = tip_amount || 0; console.log(`?? tip_amount recibido: ${tip_amount}, finalTipAmount: ${finalTipAmount}`);
 
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
 
