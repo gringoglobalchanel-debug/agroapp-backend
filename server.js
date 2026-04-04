@@ -513,7 +513,7 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
 
-        res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate: window.date, deliveryWindow: window.label, zone });
+        console.log(`? Pedido YAPPI creado: total=${totalAmount}, tip=${finalTipAmount}, productos=${totalAmount-finalTipAmount}`); res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate: window.date, deliveryWindow: window.label, zone });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
