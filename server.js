@@ -20,7 +20,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 app.get("/", (req, res) => {
-    res.json({ message: "🌱 API de AgroApp funcionando correctamente", version: "1.0.0", status: "online" });
+    res.json({ message: "🌱 API de AgroApp funcionando correctamente", version: "2.0.0", status: "online" });
 });
 
 app.get("/health", (req, res) => {
@@ -38,6 +38,172 @@ if (!supabaseUrl || !supabaseKey || !JWT_SECRET) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 console.log("✅ Supabase conectado");
+
+// ==================== HELPERS ====================
+
+// Detecta zona de David por coordenadas GPS
+function getDavidZone(lat, lng) {
+    if (!lat || !lng) return 'centro';
+    // Norte de David (lat > 8.440) → Chiriquí, Dolega, Los Algarrobos
+    if (lat > 8.440) return 'norte';
+    // Sur de David (lat < 8.415) → Pedregal, La Barqueta, San Mateo
+    if (lat < 8.415) return 'sur';
+    // Centro de David → Área central, San Pablo, Santa Marta
+    return 'centro';
+}
+
+// Calcula ventana de entrega según hora del pedido (hora Panama UTC-5)
+function getDeliveryWindow(orderTime) {
+    const panamaOffset = -5 * 60; // UTC-5 en minutos
+    const utcMinutes = orderTime.getUTCHours() * 60 + orderTime.getUTCMinutes();
+    const panamaMinutes = ((utcMinutes + panamaOffset) + 24 * 60) % (24 * 60);
+    const panamaHour = Math.floor(panamaMinutes / 60);
+
+    const today = new Date(orderTime);
+    // Ajustar a fecha Panama
+    today.setUTCMinutes(today.getUTCMinutes() + panamaOffset);
+    const todayDate = today.toISOString().split('T')[0];
+
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowDate = tomorrow.toISOString().split('T')[0];
+
+    // 8am-12pm → entrega HOY 2pm-5pm
+    if (panamaHour >= 8 && panamaHour < 12) {
+        return { date: todayDate, start: '14:00', end: '17:00', label: 'hoy entre 2:00pm y 5:00pm' };
+    }
+    // 2pm-6pm → entrega MAÑANA 9am-12pm
+    if (panamaHour >= 14 && panamaHour < 18) {
+        return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'mañana entre 9:00am y 12:00pm' };
+    }
+    // Fuera de horario → MAÑANA 9am-12pm
+    return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'mañana entre 9:00am y 12:00pm' };
+}
+
+// ==================== CRON JOB - AGRUPACION POR ZONA ====================
+
+async function agruparPedidosPorZona() {
+    console.log(`🔄 [${new Date().toISOString()}] Iniciando agrupación de pedidos por zona...`);
+    try {
+        const now = new Date();
+        const panamaOffset = -5 * 60;
+        const panamaMs = now.getTime() + panamaOffset * 60 * 1000;
+        const panamaDate = new Date(panamaMs);
+        const panamaHour = panamaDate.getUTCHours();
+
+        // Determinar qué ventana procesar
+        let targetDate, targetStart, targetEnd;
+        if (panamaHour === 12) {
+            // Corte 12pm → procesar pedidos de HOY 2pm-5pm
+            targetDate = panamaDate.toISOString().split('T')[0];
+            targetStart = '14:00';
+            targetEnd = '17:00';
+        } else if (panamaHour === 18) {
+            // Corte 6pm → procesar pedidos de MAÑANA 9am-12pm
+            const tomorrow = new Date(panamaDate);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            targetDate = tomorrow.toISOString().split('T')[0];
+            targetStart = '09:00';
+            targetEnd = '12:00';
+        } else {
+            console.log('⏰ No es hora de corte, saltando agrupación');
+            return;
+        }
+
+        console.log(`📦 Procesando pedidos para ${targetDate} ${targetStart}-${targetEnd}`);
+
+        // Obtener pedidos confirmados sin paquete asignado para esta ventana
+        const { data: pedidos, error } = await supabase
+            .from('orders')
+            .select('id, zone, delivery_window_date, delivery_window_start')
+            .eq('status', 'pending')
+            .eq('payment_status', 'completed')
+            .eq('delivery_window_date', targetDate)
+            .eq('delivery_window_start', targetStart)
+            .is('dynamic_package_id', null);
+
+        if (error) { console.error('❌ Error obteniendo pedidos:', error.message); return; }
+        if (!pedidos || pedidos.length === 0) { console.log('📭 No hay pedidos para agrupar'); return; }
+
+        console.log(`📦 ${pedidos.length} pedidos a agrupar`);
+
+        // Agrupar por zona
+        const porZona = { norte: [], centro: [], sur: [] };
+        for (const p of pedidos) {
+            const zona = p.zone || 'centro';
+            if (!porZona[zona]) porZona[zona] = [];
+            porZona[zona].push(p.id);
+        }
+
+        // Crear bloques de máximo 8 pedidos por zona
+        for (const [zona, ids] of Object.entries(porZona)) {
+            if (ids.length === 0) continue;
+
+            // Dividir en bloques de 8
+            const bloques = [];
+            for (let i = 0; i < ids.length; i += 8) {
+                bloques.push(ids.slice(i, i + 8));
+            }
+
+            for (const bloque of bloques) {
+                // Crear paquete dinámico
+                const { data: pkg, error: pkgError } = await supabase
+                    .from('dynamic_packages')
+                    .insert({
+                        current_size: bloque.length,
+                        max_size: 8,
+                        status: 'available',
+                        zone: zona,
+                        delivery_date: targetDate,
+                        delivery_window_start: targetStart,
+                        delivery_window_end: targetEnd,
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    })
+                    .select()
+                    .single();
+
+                if (pkgError) { console.error(`❌ Error creando paquete zona ${zona}:`, pkgError.message); continue; }
+
+                // Asignar pedidos al paquete
+                const packageOrders = bloque.map(orderId => ({
+                    package_id: pkg.id,
+                    order_id: orderId
+                }));
+
+                await supabase.from('package_orders').insert(packageOrders);
+
+                // Actualizar dynamic_package_id en cada orden
+                await supabase.from('orders')
+                    .update({ dynamic_package_id: pkg.id })
+                    .in('id', bloque);
+
+                console.log(`✅ Paquete zona ${zona} creado con ${bloque.length} pedidos`);
+            }
+        }
+
+        console.log('✅ Agrupación completada');
+    } catch (e) {
+        console.error('❌ Error en agrupación:', e.message);
+    }
+}
+
+// Ejecutar cron cada minuto para verificar si es hora de corte
+setInterval(async () => {
+    const now = new Date();
+    const panamaOffset = -5 * 60;
+    const panamaMs = now.getTime() + panamaOffset * 60 * 1000;
+    const panamaDate = new Date(panamaMs);
+    const panamaHour = panamaDate.getUTCHours();
+    const panamaMin = panamaDate.getUTCMinutes();
+
+    // Solo ejecutar a las 12:00pm y 6:00pm Panama exacto
+    if ((panamaHour === 12 || panamaHour === 18) && panamaMin === 0) {
+        await agruparPedidosPorZona();
+    }
+}, 60 * 1000);
+
+// ==================== MIDDLEWARES ====================
 
 const authMiddleware = async (req, res, next) => {
     const token = req.headers.authorization?.replace("Bearer ", "");
@@ -129,8 +295,6 @@ app.patch("/auth/password", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== AVATAR ====================
-
 app.post("/auth/avatar", authMiddleware, async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     if (!imageBase64) return res.status(400).json({ error: "imageBase64 es requerido" });
@@ -176,16 +340,21 @@ app.post("/orders", authMiddleware, async (req, res) => {
     const finalTipAmount = tip_amount || 0;
     const finalLatitude = delivery_latitude || null;
     const finalLongitude = delivery_longitude || null;
+
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
     if (!finalPaymentMethod) return res.status(400).json({ error: "payment_method es requerido" });
+
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product, error: productError } = await supabase.from("products").select("stock, name").eq("id", productId).single();
         if (productError || !product) return res.status(400).json({ error: `Producto no encontrado: ID ${productId}` });
         if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente para ${product.name}.` });
     }
-    const tomorrow = new Date(Date.now() + 86400000);
-    const deliveryDate = tomorrow.toISOString().split("T")[0];
+
+    // ✅ Calcular zona y ventana de entrega
+    const zone = getDavidZone(finalLatitude, finalLongitude);
+    const window = getDeliveryWindow(new Date());
+
     let totalAmount = 0;
     for (const item of items) {
         const productId = item.productId || item.product_id;
@@ -193,23 +362,38 @@ app.post("/orders", authMiddleware, async (req, res) => {
         if (product) totalAmount += product.price * item.quantity;
     }
     totalAmount += finalTipAmount;
+
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
-            user_id: req.user.userId, payment_method: finalPaymentMethod, payment_status: "completed",
-            delivery_address: finalDeliveryAddress || req.user.address, delivery_latitude: finalLatitude,
-            delivery_longitude: finalLongitude, delivery_date: deliveryDate, total_amount: totalAmount,
-            tip_amount: finalTipAmount, notes: notes || null, status: "pending"
+            user_id: req.user.userId,
+            payment_method: finalPaymentMethod,
+            payment_status: "completed",
+            delivery_address: finalDeliveryAddress || req.user.address,
+            delivery_latitude: finalLatitude,
+            delivery_longitude: finalLongitude,
+            delivery_date: window.date,
+            total_amount: totalAmount,
+            tip_amount: finalTipAmount,
+            notes: notes || null,
+            status: "pending",
+            zone: zone,
+            delivery_window_start: window.start,
+            delivery_window_end: window.end,
+            delivery_window_date: window.date
         }).select().single();
         if (orderError) throw orderError;
+
         const productPrices = {};
         for (const item of items) {
             const productId = item.productId || item.product_id;
             const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
             if (product) productPrices[productId] = product.price;
         }
+
         const orderItems = items.map(item => ({ order_id: order.id, product_id: item.productId || item.product_id, quantity: item.quantity, unit_price: productPrices[item.productId || item.product_id] || 0 }));
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
+
         for (const item of items) {
             const productId = item.productId || item.product_id;
             const { data: product } = await supabase.from("products").select("stock").eq("id", productId).single();
@@ -218,7 +402,8 @@ app.post("/orders", authMiddleware, async (req, res) => {
             await supabase.from("products").update({ stock: newStock }).eq("id", productId);
             await supabase.from("inventory_logs").insert({ product_id: productId, previous_quantity: previousStock, new_quantity: newStock, change_type: "sale", order_id: order.id, notes: `Venta en pedido ${order.id}`, created_by: req.user.userId });
         }
-        res.json({ message: "Pedido creado", orderId: order.id, deliveryDate });
+
+        res.json({ message: "Pedido creado", orderId: order.id, deliveryDate: window.date, deliveryWindow: window.label, zone });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -271,16 +456,22 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, tip_amount } = req.body;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
     const finalTipAmount = tip_amount || 0;
+
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
+
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product } = await supabase.from("products").select("stock, name").eq("id", productId).single();
         if (!product) return res.status(400).json({ error: `Producto no encontrado: ID ${productId}` });
         if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente` });
     }
+
     const referenceCode = generateReferenceCode();
-    const tomorrow = new Date(Date.now() + 86400000);
-    const deliveryDate = tomorrow.toISOString().split("T")[0];
+
+    // ✅ Calcular zona y ventana de entrega
+    const zone = getDavidZone(delivery_latitude, delivery_longitude);
+    const window = getDeliveryWindow(new Date());
+
     let totalAmount = 0;
     const productPrices = {};
     for (const item of items) {
@@ -292,6 +483,7 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         }
     }
     totalAmount += finalTipAmount;
+
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
             user_id: req.user.userId,
@@ -300,13 +492,18 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
             delivery_address: finalDeliveryAddress || req.user.address,
             delivery_latitude: delivery_latitude || null,
             delivery_longitude: delivery_longitude || null,
-            delivery_date: deliveryDate,
+            delivery_date: window.date,
             total_amount: totalAmount,
             tip_amount: finalTipAmount,
             reference_code: referenceCode,
-            status: "waiting_confirmation"
+            status: "waiting_confirmation",
+            zone: zone,
+            delivery_window_start: window.start,
+            delivery_window_end: window.end,
+            delivery_window_date: window.date
         }).select().single();
         if (orderError) throw orderError;
+
         const orderItems = items.map(item => ({
             order_id: order.id,
             product_id: item.productId || item.product_id,
@@ -315,7 +512,8 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         }));
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
-        res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate });
+
+        res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate: window.date, deliveryWindow: window.label, zone });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -334,17 +532,14 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
 
 app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res) => {
     try {
-        const { data, error } = await supabase.from("orders").select("id, total_amount, tip_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, users!orders_user_id_fkey(full_name, phone, email)").eq("payment_method", "yappi").in("status", ["waiting_confirmation", "pending_approval"]).order("created_at", { ascending: false });
+        const { data, error } = await supabase.from("orders").select("id, total_amount, tip_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, zone, delivery_window_start, delivery_window_end, delivery_window_date, users!orders_user_id_fkey(full_name, phone, email)").eq("payment_method", "yappi").in("status", ["waiting_confirmation", "pending_approval"]).order("created_at", { ascending: false });
         if (error) throw error;
         res.json(data.map(o => ({
-            id: o.id,
-            total_amount: o.total_amount,
-            tip_amount: o.tip_amount || 0,
-            reference_code: o.reference_code,
-            created_at: o.created_at,
-            payment_confirmed_at: o.payment_confirmed_at,
-            delivery_address: o.delivery_address,
-            status: o.status,
+            id: o.id, total_amount: o.total_amount, tip_amount: o.tip_amount || 0,
+            reference_code: o.reference_code, created_at: o.created_at,
+            payment_confirmed_at: o.payment_confirmed_at, delivery_address: o.delivery_address,
+            status: o.status, zone: o.zone,
+            delivery_window: o.delivery_window_date ? `${o.delivery_window_date} ${o.delivery_window_start}-${o.delivery_window_end}` : null,
             customer_name: o.users?.full_name || "Cliente",
             customer_phone: o.users?.phone || "",
             customer_email: o.users?.email || ""
@@ -356,84 +551,47 @@ app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async
     const { orderId } = req.params;
     try {
         console.log(`✅ Aprobando pago YAPPI: ${orderId}`);
-        const { data, error } = await supabase.from("orders")
-            .update({ payment_status: "completed", status: "pending", updated_at: new Date().toISOString() })
-            .eq("id", orderId)
-            .select()
-            .single();
+        const { data, error } = await supabase.from("orders").update({ payment_status: "completed", status: "pending", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
         if (error) { console.error("❌ Error aprobando:", error.message); throw error; }
-        if (!data) return res.status(404).json({ error: "Pedido no encontrado o ya procesado" });
+        if (!data) return res.status(404).json({ error: "Pedido no encontrado" });
         console.log(`✅ Pago aprobado OK: ${orderId}`);
         res.json({ success: true, message: "Pago YAPPI aprobado", order: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ✅ Reject robusto con logging y sin .single() que falla silenciosamente
 app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
     const { reason } = req.body;
     console.log(`❌ Rechazando pago YAPPI: ${orderId}, motivo: ${reason}`);
     try {
-        // Verificar que el pedido existe
-        const { data: existingOrder, error: fetchError } = await supabase
-            .from("orders")
-            .select("id, status, payment_status")
-            .eq("id", orderId)
-            .single();
+        const { data: existingOrder, error: fetchError } = await supabase.from("orders").select("id, status, payment_status").eq("id", orderId).single();
+        if (fetchError || !existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
 
-        if (fetchError || !existingOrder) {
-            console.error("❌ Pedido no encontrado:", orderId);
-            return res.status(404).json({ error: "Pedido no encontrado" });
-        }
-
-        console.log(`📋 Estado actual: status=${existingOrder.status}, payment=${existingOrder.payment_status}`);
-
-        // Devolver stock
-        const { data: orderItems } = await supabase
-            .from("order_items")
-            .select("product_id, quantity")
-            .eq("order_id", orderId);
-
+        const { data: orderItems } = await supabase.from("order_items").select("product_id, quantity").eq("order_id", orderId);
         for (const item of orderItems || []) {
-            const { data: product } = await supabase
-                .from("products")
-                .select("stock")
-                .eq("id", item.product_id)
-                .single();
-            if (product) {
-                await supabase.from("products")
-                    .update({ stock: product.stock + item.quantity })
-                    .eq("id", item.product_id);
-            }
+            const { data: product } = await supabase.from("products").select("stock").eq("id", item.product_id).single();
+            if (product) await supabase.from("products").update({ stock: product.stock + item.quantity }).eq("id", item.product_id);
         }
 
-        // Actualizar el pedido — sin .single() para evitar error si no hay resultado
-        const rejectNote = reason
-            ? `Pago rechazado: ${reason}`
-            : "Pago YAPPI rechazado por administrador";
+        const rejectNote = reason ? `Pago rechazado: ${reason}` : "Pago YAPPI rechazado por administrador";
+        const { data, error } = await supabase.from("orders").update({ payment_status: "rejected", status: "cancelled", notes: rejectNote, updated_at: new Date().toISOString() }).eq("id", orderId).select();
+        if (error) throw error;
 
-        const { data, error } = await supabase
-            .from("orders")
-            .update({
-                payment_status: "rejected",
-                status: "cancelled",
-                notes: rejectNote,
-                updated_at: new Date().toISOString()
-            })
-            .eq("id", orderId)
-            .select();
-
-        if (error) {
-            console.error("❌ Error al rechazar:", error.message);
-            throw error;
-        }
-
-        console.log(`✅ Pago rechazado OK: ${orderId}, registros afectados: ${data?.length}`);
+        console.log(`✅ Pago rechazado OK: ${orderId}`);
         res.json({ success: true, message: "Pago rechazado y stock devuelto", rejectedNote: rejectNote });
     } catch (e) {
         console.error("❌ Exception en reject:", e.message);
         res.status(500).json({ error: e.message });
     }
+});
+
+// ==================== ENDPOINT MANUAL PARA AGRUPAR (ADMIN) ====================
+
+app.post("/admin/agrupar-pedidos", authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        await agruparPedidosPorZona();
+        res.json({ success: true, message: "Agrupacion ejecutada manualmente" });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== VENDEDOR ====================
@@ -472,11 +630,24 @@ app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
 
 app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (req, res) => {
     try {
-        const { data: packages, error } = await supabase.from("dynamic_packages").select("id, current_size, max_size, status, created_at, updated_at").eq("status", "available").order("created_at");
+        const { data: packages, error } = await supabase.from("dynamic_packages").select("id, current_size, max_size, status, zone, delivery_date, delivery_window_start, delivery_window_end, created_at, updated_at").eq("status", "available").order("created_at");
         if (error) throw error;
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
-            const { data: pkgOrders } = await supabase.from("package_orders").select("order_id, orders(id, user_id, delivery_address, delivery_latitude, delivery_longitude, total_amount, tip_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))").eq("package_id", pkg.id);
-            return { ...pkg, orders: pkgOrders?.map(po => ({ order_id: po.orders?.id, user_id: po.orders?.user_id, delivery_address: po.orders?.delivery_address, delivery_latitude: po.orders?.delivery_latitude, delivery_longitude: po.orders?.delivery_longitude, total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0, payment_method: po.orders?.payment_method, created_at: po.orders?.created_at, customer_name: po.orders?.users?.full_name || "Cliente", customer_phone: po.orders?.users?.phone || "No disponible" })) || [] };
+            const { data: pkgOrders } = await supabase.from("package_orders").select("order_id, orders(id, user_id, delivery_address, delivery_latitude, delivery_longitude, total_amount, tip_amount, payment_method, created_at, zone, users!orders_user_id_fkey(full_name, phone))").eq("package_id", pkg.id);
+            return {
+                ...pkg,
+                orders: pkgOrders?.map(po => ({
+                    order_id: po.orders?.id, user_id: po.orders?.user_id,
+                    delivery_address: po.orders?.delivery_address,
+                    delivery_latitude: po.orders?.delivery_latitude,
+                    delivery_longitude: po.orders?.delivery_longitude,
+                    total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0,
+                    payment_method: po.orders?.payment_method, created_at: po.orders?.created_at,
+                    zone: po.orders?.zone,
+                    customer_name: po.orders?.users?.full_name || "Cliente",
+                    customer_phone: po.orders?.users?.phone || "No disponible"
+                })) || []
+            };
         }));
         res.json(formattedPackages);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -498,11 +669,24 @@ app.post("/driver/packages/take", authMiddleware, driverMiddleware, async (req, 
 
 app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res) => {
     try {
-        const { data: packages, error } = await supabase.from("dynamic_packages").select("id, current_size, max_size, status, taken_by, taken_at, created_at").eq("taken_by", req.user.userId).order("taken_at", { ascending: false });
+        const { data: packages, error } = await supabase.from("dynamic_packages").select("id, current_size, max_size, status, zone, delivery_date, delivery_window_start, delivery_window_end, taken_by, taken_at, created_at").eq("taken_by", req.user.userId).order("taken_at", { ascending: false });
         if (error) throw error;
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
-            const { data: pkgOrders } = await supabase.from("package_orders").select("order_id, orders(id, user_id, delivery_address, delivery_latitude, delivery_longitude, total_amount, tip_amount, payment_method, created_at, users!orders_user_id_fkey(full_name, phone))").eq("package_id", pkg.id);
-            return { ...pkg, orders: pkgOrders?.map(po => ({ order_id: po.orders?.id, user_id: po.orders?.user_id, delivery_address: po.orders?.delivery_address, delivery_latitude: po.orders?.delivery_latitude, delivery_longitude: po.orders?.delivery_longitude, total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0, payment_method: po.orders?.payment_method, created_at: po.orders?.created_at, customer_name: po.orders?.users?.full_name || "Cliente", customer_phone: po.orders?.users?.phone || "No disponible" })) || [] };
+            const { data: pkgOrders } = await supabase.from("package_orders").select("order_id, orders(id, user_id, delivery_address, delivery_latitude, delivery_longitude, total_amount, tip_amount, payment_method, created_at, zone, users!orders_user_id_fkey(full_name, phone))").eq("package_id", pkg.id);
+            return {
+                ...pkg,
+                orders: pkgOrders?.map(po => ({
+                    order_id: po.orders?.id, user_id: po.orders?.user_id,
+                    delivery_address: po.orders?.delivery_address,
+                    delivery_latitude: po.orders?.delivery_latitude,
+                    delivery_longitude: po.orders?.delivery_longitude,
+                    total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0,
+                    payment_method: po.orders?.payment_method, created_at: po.orders?.created_at,
+                    zone: po.orders?.zone,
+                    customer_name: po.orders?.users?.full_name || "Cliente",
+                    customer_phone: po.orders?.users?.phone || "No disponible"
+                })) || []
+            };
         }));
         res.json(formattedPackages);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -536,9 +720,8 @@ app.patch("/driver/orders/:orderId/status", authMiddleware, driverMiddleware, as
         const { data: order, error: orderError } = await supabase.from("orders").select("id, dynamic_package_id, driver_id, status, tip_amount").eq("id", orderId).single();
         if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (!order.dynamic_package_id) return res.status(400).json({ error: "Este pedido no esta asignado a ningun paquete" });
-        const { data: pkg, error: pkgError } = await supabase.from("dynamic_packages").select("id, taken_by").eq("id", order.dynamic_package_id).single();
-        if (pkgError || !pkg) return res.status(403).json({ error: "Paquete no encontrado" });
-        if (pkg.taken_by !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido asignado" });
+        const { data: pkg } = await supabase.from("dynamic_packages").select("id, taken_by").eq("id", order.dynamic_package_id).single();
+        if (!pkg || pkg.taken_by !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido asignado" });
         const { data: updatedOrder, error: updateError } = await supabase.from("orders").update({ status, updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
         if (updateError) return res.status(400).json({ error: "Error al actualizar" });
         await supabase.from("package_orders").delete().eq("order_id", orderId);
@@ -626,25 +809,6 @@ app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, r
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== ADMIN - UPLOAD IMAGEN PRODUCTO ====================
-
-app.post("/admin/products/upload-image", authMiddleware, adminMiddleware, async (req, res) => {
-    const { imageBase64, mimeType } = req.body;
-    if (!imageBase64) return res.status(400).json({ error: "imageBase64 es requerido" });
-    try {
-        const fileName = `product_${Date.now()}.jpg`;
-        const fileBuffer = Buffer.from(imageBase64, 'base64');
-        const contentType = mimeType || 'image/jpeg';
-        const { error: uploadError } = await supabase.storage.from('products').upload(fileName, fileBuffer, { contentType, upsert: true });
-        if (uploadError) throw uploadError;
-        const { data: urlData } = supabase.storage.from('products').getPublicUrl(fileName);
-        res.json({ success: true, image_url: urlData.publicUrl });
-    } catch (e) {
-        console.error('Error subiendo imagen producto:', e.message);
-        res.status(500).json({ error: e.message });
-    }
-});
-
 // ==================== ADMIN - PRODUCTOS ====================
 
 app.get("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
@@ -701,6 +865,20 @@ app.delete("/admin/products/:id", authMiddleware, adminMiddleware, async (req, r
         const { error } = await supabase.from("products").delete().eq("id", req.params.id);
         if (error) throw error;
         res.json({ message: "Producto eliminado" });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/admin/products/upload-image", authMiddleware, adminMiddleware, async (req, res) => {
+    const { imageBase64, mimeType } = req.body;
+    if (!imageBase64) return res.status(400).json({ error: "imageBase64 es requerido" });
+    try {
+        const fileName = `product_${Date.now()}.jpg`;
+        const fileBuffer = Buffer.from(imageBase64, 'base64');
+        const contentType = mimeType || 'image/jpeg';
+        const { error: uploadError } = await supabase.storage.from('products').upload(fileName, fileBuffer, { contentType, upsert: true });
+        if (uploadError) throw uploadError;
+        const { data: urlData } = supabase.storage.from('products').getPublicUrl(fileName);
+        res.json({ success: true, image_url: urlData.publicUrl });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -775,13 +953,13 @@ app.get("/admin/drivers/list", authMiddleware, adminMiddleware, async (req, res)
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     try {
         const { amount, currency = 'usd' } = req.body;
-        console.log(`💳 Stripe create-intent: amount=${amount} currency=${currency} key=${process.env.STRIPE_SECRET_KEY?.substring(0,12)}...`);
+        console.log(`💳 Stripe create-intent: amount=${amount} currency=${currency}`);
         if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto invalido' });
         const paymentIntent = await stripe.paymentIntents.create({ amount, currency, metadata: { userId: req.user.userId } });
         console.log(`✅ PaymentIntent creado: ${paymentIntent.id}`);
         res.json({ clientSecret: paymentIntent.client_secret });
     } catch (error) {
-        console.error('❌ Stripe error:', error.message, error.type, error.code);
+        console.error('❌ Stripe error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -790,7 +968,7 @@ app.post('/payments/create-intent', authMiddleware, async (req, res) => {
 
 app.get("/debug/users", async (req, res) => {
     try {
-        const { data, error } = await supabase.from("users").select("id, email, full_name, role, user_type, password_hash");
+        const { data, error } = await supabase.from("users").select("id, email, full_name, role, user_type");
         if (error) throw error;
         res.json(data);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -802,16 +980,14 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`
 ╔════════════════════════════════════════╗
-║   🌱 AGROAPP BACKEND - COMPLETO       ║
+║   🌱 AGROAPP BACKEND v2.0             ║
 ╠════════════════════════════════════════╣
-║   ✅ Servidor corriendo en puerto ${PORT}  ║
-║   💳 Stripe: CONFIGURADO               ║
-║   💰 YAPPI: CONFIGURADO                ║
-║   🚚 DRIVER: CONFIGURADO               ║
-║   📦 PAQUETES: CONFIGURADO             ║
-║   📍 TRACKING: CONFIGURADO             ║
-║   👑 ADMIN: CONFIGURADO                ║
-║   🏪 VENDEDOR: CONFIGURADO             ║
+║   ✅ Puerto: ${PORT}                      ║
+║   🗺️  Zonas David: Norte/Centro/Sur    ║
+║   ⏰ Corte: 12pm y 6pm automatico     ║
+║   📦 Bloques: max 8 pedidos/zona      ║
+║   💳 Stripe: LIVE                      ║
+║   📱 YAPPI: CONFIGURADO                ║
 ╚════════════════════════════════════════╝
     `);
 });
