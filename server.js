@@ -949,6 +949,43 @@ app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     }
 });
 
+
+// ==================== ADMIN - PEDIDOS PENDIENTES ====================
+
+app.get("/admin/orders/pending", authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from("orders")
+            .select("id, total_amount, tip_amount, delivery_address, delivery_date, delivery_window_start, delivery_window_end, delivery_window_date, status, zone, created_at, payment_method, users!orders_user_id_fkey(full_name, phone), order_items(quantity, unit_price, products(name, unit))")
+            .in("status", ["pending", "confirmed", "in_progress"])
+            .eq("payment_status", "completed")
+            .order("delivery_window_date", { ascending: true })
+            .order("delivery_window_start", { ascending: true });
+        if (error) throw error;
+        res.json(data.map(o => ({
+            id: o.id,
+            total_amount: parseFloat(o.total_amount),
+            tip_amount: parseFloat(o.tip_amount || 0),
+            delivery_address: o.delivery_address,
+            delivery_date: o.delivery_date,
+            delivery_window_start: o.delivery_window_start,
+            delivery_window_end: o.delivery_window_end,
+            delivery_window_date: o.delivery_window_date,
+            status: o.status,
+            zone: o.zone,
+            created_at: o.created_at,
+            payment_method: o.payment_method,
+            customer_name: o.users?.full_name || "Cliente",
+            customer_phone: o.users?.phone || "",
+            items: o.order_items?.map(i => ({
+                name: i.products?.name || "Producto",
+                unit: i.products?.unit || "",
+                quantity: i.quantity,
+                subtotal: i.unit_price * i.quantity
+            })) || []
+        })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
 // ==================== DEBUG ====================
 
 app.get("/debug/users", async (req, res) => {
