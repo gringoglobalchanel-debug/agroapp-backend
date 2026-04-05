@@ -480,7 +480,7 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         if (product) {
             productPrices[productId] = product.price;
             totalAmount += parseFloat(product.price) * parseFloat(item.quantity);
-            console.log(`?? item: id=${productId} price=${product.price} qty=${item.quantity} sub=${parseFloat(product.price)*parseFloat(item.quantity)}`);
+            console.log(`?? item: id=${productId} price=${product.price} qty=${item.quantity} sub=${parseFloat(product.price)*parseFloat(item.quantity)}`);`nconsole.log(`?? ANTES de tip: totalAmount=${totalAmount} tipo=${typeof totalAmount} tip=${finalTipAmount} tipo=${typeof finalTipAmount}`);
         }
     }
     totalAmount += parseFloat(finalTipAmount); console.log(`?? totalAmount despues de tip: ${totalAmount}, productos: ${totalAmount - finalTipAmount}`);
@@ -992,4 +992,5 @@ app.listen(PORT, () => {
 â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     `);
 });
+
 
