@@ -10,7 +10,7 @@ require("dotenv").config();
 const app = express();
 
 app.use((req, res, next) => {
-    console.log(`ðŸ“ [${new Date().toISOString()}] ${req.method} ${req.url}`);
+    console.log(`📍 [${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
 });
 
@@ -20,7 +20,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 app.get("/", (req, res) => {
-    res.json({ message: "ðŸŒ± API de AgroApp funcionando correctamente", version: "2.0.0", status: "online" });
+    res.json({ message: "🌱 API de AgroApp funcionando correctamente", version: "2.0.0", status: "online" });
 });
 
 app.get("/health", (req, res) => {
@@ -32,35 +32,29 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!supabaseUrl || !supabaseKey || !JWT_SECRET) {
-    console.error("âŒ ERROR: Variables de entorno faltantes");
+    console.error("❌ ERROR: Variables de entorno faltantes");
     process.exit(1);
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
-console.log("âœ… Supabase conectado");
+console.log("✅ Supabase conectado");
 
 // ==================== HELPERS ====================
 
-// Detecta zona de David por coordenadas GPS
 function getDavidZone(lat, lng) {
     if (!lat || !lng) return 'centro';
-    // Norte de David (lat > 8.440) â†’ ChiriquÃ­, Dolega, Los Algarrobos
     if (lat > 8.440) return 'norte';
-    // Sur de David (lat < 8.415) â†’ Pedregal, La Barqueta, San Mateo
     if (lat < 8.415) return 'sur';
-    // Centro de David â†’ Ãrea central, San Pablo, Santa Marta
     return 'centro';
 }
 
-// Calcula ventana de entrega segÃºn hora del pedido (hora Panama UTC-5)
 function getDeliveryWindow(orderTime) {
-    const panamaOffset = -5 * 60; // UTC-5 en minutos
+    const panamaOffset = -5 * 60;
     const utcMinutes = orderTime.getUTCHours() * 60 + orderTime.getUTCMinutes();
     const panamaMinutes = ((utcMinutes + panamaOffset) + 24 * 60) % (24 * 60);
     const panamaHour = Math.floor(panamaMinutes / 60);
 
     const today = new Date(orderTime);
-    // Ajustar a fecha Panama
     today.setUTCMinutes(today.getUTCMinutes() + panamaOffset);
     const todayDate = today.toISOString().split('T')[0];
 
@@ -68,22 +62,19 @@ function getDeliveryWindow(orderTime) {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowDate = tomorrow.toISOString().split('T')[0];
 
-    // 8am-12pm â†’ entrega HOY 2pm-5pm
     if (panamaHour >= 8 && panamaHour < 12) {
         return { date: todayDate, start: '14:00', end: '17:00', label: 'hoy entre 2:00pm y 5:00pm' };
     }
-    // 2pm-6pm â†’ entrega MAÃ‘ANA 9am-12pm
     if (panamaHour >= 14 && panamaHour < 18) {
-        return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'maÃ±ana entre 9:00am y 12:00pm' };
+        return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'manana entre 9:00am y 12:00pm' };
     }
-    // Fuera de horario â†’ MAÃ‘ANA 9am-12pm
-    return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'maÃ±ana entre 9:00am y 12:00pm' };
+    return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'manana entre 9:00am y 12:00pm' };
 }
 
-// ==================== CRON JOB - AGRUPACION POR ZONA ====================
+// ==================== CRON JOB ====================
 
 async function agruparPedidosPorZona() {
-    console.log(`ðŸ”„ [${new Date().toISOString()}] Iniciando agrupaciÃ³n de pedidos por zona...`);
+    console.log(`🔄 [${new Date().toISOString()}] Iniciando agrupacion de pedidos por zona...`);
     try {
         const now = new Date();
         const panamaOffset = -5 * 60;
@@ -91,28 +82,24 @@ async function agruparPedidosPorZona() {
         const panamaDate = new Date(panamaMs);
         const panamaHour = panamaDate.getUTCHours();
 
-        // Determinar quÃ© ventana procesar
         let targetDate, targetStart, targetEnd;
         if (panamaHour === 12) {
-            // Corte 12pm â†’ procesar pedidos de HOY 2pm-5pm
             targetDate = panamaDate.toISOString().split('T')[0];
             targetStart = '14:00';
             targetEnd = '17:00';
         } else if (panamaHour === 18) {
-            // Corte 6pm â†’ procesar pedidos de MAÃ‘ANA 9am-12pm
             const tomorrow = new Date(panamaDate);
             tomorrow.setDate(tomorrow.getDate() + 1);
             targetDate = tomorrow.toISOString().split('T')[0];
             targetStart = '09:00';
             targetEnd = '12:00';
         } else {
-            console.log('â° No es hora de corte, saltando agrupaciÃ³n');
+            console.log('⏰ No es hora de corte, saltando agrupacion');
             return;
         }
 
-        console.log(`ðŸ“¦ Procesando pedidos para ${targetDate} ${targetStart}-${targetEnd}`);
+        console.log(`📦 Procesando pedidos para ${targetDate} ${targetStart}-${targetEnd}`);
 
-        // Obtener pedidos confirmados sin paquete asignado para esta ventana
         const { data: pedidos, error } = await supabase
             .from('orders')
             .select('id, zone, delivery_window_date, delivery_window_start')
@@ -122,12 +109,11 @@ async function agruparPedidosPorZona() {
             .eq('delivery_window_start', targetStart)
             .is('dynamic_package_id', null);
 
-        if (error) { console.error('âŒ Error obteniendo pedidos:', error.message); return; }
-        if (!pedidos || pedidos.length === 0) { console.log('ðŸ“­ No hay pedidos para agrupar'); return; }
+        if (error) { console.error('❌ Error obteniendo pedidos:', error.message); return; }
+        if (!pedidos || pedidos.length === 0) { console.log('📭 No hay pedidos para agrupar'); return; }
 
-        console.log(`ðŸ“¦ ${pedidos.length} pedidos a agrupar`);
+        console.log(`📦 ${pedidos.length} pedidos a agrupar`);
 
-        // Agrupar por zona
         const porZona = { norte: [], centro: [], sur: [] };
         for (const p of pedidos) {
             const zona = p.zone || 'centro';
@@ -135,18 +121,15 @@ async function agruparPedidosPorZona() {
             porZona[zona].push(p.id);
         }
 
-        // Crear bloques de mÃ¡ximo 8 pedidos por zona
         for (const [zona, ids] of Object.entries(porZona)) {
             if (ids.length === 0) continue;
 
-            // Dividir en bloques de 8
             const bloques = [];
             for (let i = 0; i < ids.length; i += 8) {
                 bloques.push(ids.slice(i, i + 8));
             }
 
             for (const bloque of bloques) {
-                // Crear paquete dinÃ¡mico
                 const { data: pkg, error: pkgError } = await supabase
                     .from('dynamic_packages')
                     .insert({
@@ -163,32 +146,26 @@ async function agruparPedidosPorZona() {
                     .select()
                     .single();
 
-                if (pkgError) { console.error(`âŒ Error creando paquete zona ${zona}:`, pkgError.message); continue; }
+                if (pkgError) { console.error(`❌ Error creando paquete zona ${zona}:`, pkgError.message); continue; }
 
-                // Asignar pedidos al paquete
                 const packageOrders = bloque.map(orderId => ({
                     package_id: pkg.id,
                     order_id: orderId
                 }));
 
                 await supabase.from('package_orders').insert(packageOrders);
+                await supabase.from('orders').update({ dynamic_package_id: pkg.id }).in('id', bloque);
 
-                // Actualizar dynamic_package_id en cada orden
-                await supabase.from('orders')
-                    .update({ dynamic_package_id: pkg.id })
-                    .in('id', bloque);
-
-                console.log(`âœ… Paquete zona ${zona} creado con ${bloque.length} pedidos`);
+                console.log(`✅ Paquete zona ${zona} creado con ${bloque.length} pedidos`);
             }
         }
 
-        console.log('âœ… AgrupaciÃ³n completada');
+        console.log('✅ Agrupacion completada');
     } catch (e) {
-        console.error('âŒ Error en agrupaciÃ³n:', e.message);
+        console.error('❌ Error en agrupacion:', e.message);
     }
 }
 
-// Ejecutar cron cada minuto para verificar si es hora de corte
 setInterval(async () => {
     const now = new Date();
     const panamaOffset = -5 * 60;
@@ -197,7 +174,6 @@ setInterval(async () => {
     const panamaHour = panamaDate.getUTCHours();
     const panamaMin = panamaDate.getUTCMinutes();
 
-    // Solo ejecutar a las 12:00pm y 6:00pm Panama exacto
     if ((panamaHour === 12 || panamaHour === 18) && panamaMin === 0) {
         await agruparPedidosPorZona();
     }
@@ -304,7 +280,7 @@ app.post("/auth/avatar", authMiddleware, async (req, res) => {
         const fileBuffer = Buffer.from(imageBase64, 'base64');
         const contentType = mimeType || 'image/jpeg';
         const { error: uploadError } = await supabase.storage.from('avatars').upload(fileName, fileBuffer, { contentType, upsert: true });
-        if (uploadError) { console.error('? Error subiendo imagen:', JSON.stringify(uploadError)); throw uploadError; }
+        if (uploadError) { console.error('❌ Error subiendo imagen:', JSON.stringify(uploadError)); throw uploadError; }
         const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
         const avatarUrl = urlData.publicUrl;
         const { error: updateError } = await supabase.from('users').update({ avatar_url: avatarUrl }).eq('id', userId);
@@ -337,7 +313,8 @@ app.post("/orders", authMiddleware, async (req, res) => {
     const { items, paymentMethod, payment_method, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, notes, tip_amount } = req.body;
     const finalPaymentMethod = paymentMethod || payment_method;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
-    const finalTipAmount = tip_amount || 0; console.log(`?? tip_amount recibido: ${tip_amount}, finalTipAmount: ${finalTipAmount}`);
+    // ✅ FIX: parseFloat para evitar concatenacion de strings
+    const finalTipAmount = parseFloat(tip_amount) || 0;
     const finalLatitude = delivery_latitude || null;
     const finalLongitude = delivery_longitude || null;
 
@@ -351,17 +328,20 @@ app.post("/orders", authMiddleware, async (req, res) => {
         if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente para ${product.name}.` });
     }
 
-    // âœ… Calcular zona y ventana de entrega
     const zone = getDavidZone(finalLatitude, finalLongitude);
     const window = getDeliveryWindow(new Date());
 
+    // ✅ FIX: parseFloat en todos los calculos numericos
     let totalAmount = 0;
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
-        if (product) totalAmount += product.price * item.quantity;
+        if (product) totalAmount += parseFloat(product.price) * parseFloat(item.quantity);
     }
-    totalAmount += parseFloat(finalTipAmount); console.log(`?? totalAmount despues de tip: ${totalAmount}, productos: ${totalAmount - finalTipAmount}`);
+    totalAmount += finalTipAmount;
+    // ✅ FIX: redondear a 2 decimales antes del insert
+    totalAmount = parseFloat(totalAmount.toFixed(2));
+    console.log(`✅ totalAmount FINAL: ${totalAmount}, tip: ${finalTipAmount}, productos: ${totalAmount - finalTipAmount}`);
 
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
@@ -455,7 +435,8 @@ function generateReferenceCode() {
 app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, tip_amount } = req.body;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
-    const finalTipAmount = tip_amount || 0; console.log(`?? tip_amount recibido: ${tip_amount}, finalTipAmount: ${finalTipAmount}`);
+    // ✅ FIX: parseFloat para evitar concatenacion de strings
+    const finalTipAmount = parseFloat(tip_amount) || 0;
 
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
 
@@ -467,11 +448,10 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     }
 
     const referenceCode = generateReferenceCode();
-
-    // âœ… Calcular zona y ventana de entrega
     const zone = getDavidZone(delivery_latitude, delivery_longitude);
     const window = getDeliveryWindow(new Date());
 
+    // ✅ FIX: parseFloat en todos los calculos numericos
     let totalAmount = 0;
     const productPrices = {};
     for (const item of items) {
@@ -480,10 +460,12 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         if (product) {
             productPrices[productId] = product.price;
             totalAmount += parseFloat(product.price) * parseFloat(item.quantity);
-            console.log(`?? item: id=${productId} price=${product.price} qty=${item.quantity} sub=${parseFloat(product.price)*parseFloat(item.quantity)}`);
         }
     }
-    totalAmount += parseFloat(finalTipAmount); console.log(`?? totalAmount despues de tip: ${totalAmount}, productos: ${totalAmount - finalTipAmount}`);
+    totalAmount += finalTipAmount;
+    // ✅ FIX: redondear a 2 decimales antes del insert
+    totalAmount = parseFloat(totalAmount.toFixed(2));
+    console.log(`✅ YAPPI totalAmount FINAL: ${totalAmount}, tip: ${finalTipAmount}, productos: ${totalAmount - finalTipAmount}`);
 
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
@@ -514,7 +496,8 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
 
-        console.log(`? Pedido YAPPI creado: total=${totalAmount}, tip=${finalTipAmount}, productos=${totalAmount-finalTipAmount}`); res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate: window.date, deliveryWindow: window.label, zone });
+        console.log(`✅ Pedido YAPPI creado: total=${totalAmount}, tip=${finalTipAmount}, productos=${totalAmount - finalTipAmount}`);
+        res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate: window.date, deliveryWindow: window.label, zone });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -551,11 +534,11 @@ app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res
 app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
     try {
-        console.log(`âœ… Aprobando pago YAPPI: ${orderId}`);
+        console.log(`✅ Aprobando pago YAPPI: ${orderId}`);
         const { data, error } = await supabase.from("orders").update({ payment_status: "completed", status: "pending", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
-        if (error) { console.error("âŒ Error aprobando:", error.message); throw error; }
+        if (error) { console.error("❌ Error aprobando:", error.message); throw error; }
         if (!data) return res.status(404).json({ error: "Pedido no encontrado" });
-        console.log(`âœ… Pago aprobado OK: ${orderId}`);
+        console.log(`✅ Pago aprobado OK: ${orderId}`);
         res.json({ success: true, message: "Pago YAPPI aprobado", order: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -563,7 +546,7 @@ app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async
 app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
     const { reason } = req.body;
-    console.log(`âŒ Rechazando pago YAPPI: ${orderId}, motivo: ${reason}`);
+    console.log(`❌ Rechazando pago YAPPI: ${orderId}, motivo: ${reason}`);
     try {
         const { data: existingOrder, error: fetchError } = await supabase.from("orders").select("id, status, payment_status").eq("id", orderId).single();
         if (fetchError || !existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
@@ -578,15 +561,15 @@ app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async 
         const { data, error } = await supabase.from("orders").update({ payment_status: "rejected", status: "cancelled", notes: rejectNote, updated_at: new Date().toISOString() }).eq("id", orderId).select();
         if (error) throw error;
 
-        console.log(`âœ… Pago rechazado OK: ${orderId}`);
+        console.log(`✅ Pago rechazado OK: ${orderId}`);
         res.json({ success: true, message: "Pago rechazado y stock devuelto", rejectedNote: rejectNote });
     } catch (e) {
-        console.error("âŒ Exception en reject:", e.message);
+        console.error("❌ Exception en reject:", e.message);
         res.status(500).json({ error: e.message });
     }
 });
 
-// ==================== ENDPOINT MANUAL PARA AGRUPAR (ADMIN) ====================
+// ==================== ADMIN MANUAL AGRUPACION ====================
 
 app.post("/admin/agrupar-pedidos", authMiddleware, adminMiddleware, async (req, res) => {
     try {
@@ -704,7 +687,7 @@ app.get("/driver/earnings/packages", authMiddleware, driverMiddleware, async (re
         const { data: deliveredOrders, error } = await supabase.from("orders").select("id, tip_amount, status, updated_at").eq("status", "completed").eq("driver_id", req.user.userId).gte("updated_at", weekStart.toISOString());
         if (error) throw error;
         let totalOrders = 0, totalBasePayment = 0, totalTips = 0;
-        for (const order of deliveredOrders || []) { totalOrders++; totalBasePayment += 2.50; if (order.tip_amount) totalTips += order.tip_amount; }
+        for (const order of deliveredOrders || []) { totalOrders++; totalBasePayment += 2.50; if (order.tip_amount) totalTips += parseFloat(order.tip_amount); }
         const platformCommission = totalBasePayment * 0.10;
         const driverNetAmount = totalBasePayment * 0.90 + totalTips;
         const daysUntilFriday = (5 - today.getDay() + 7) % 7;
@@ -796,15 +779,15 @@ app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, r
         const { count: outOfStockProducts } = await supabase.from("products").select("*", { count: "exact", head: true }).eq("stock", 0);
         const { data: todayOrders } = await supabase.from("orders").select("total_amount").eq("delivery_date", today).eq("status", "completed");
         const totalOrdersToday = todayOrders?.length || 0;
-        const totalRevenueToday = todayOrders?.reduce((sum, o) => sum + (o.total_amount || 0), 0) || 0;
+        const totalRevenueToday = todayOrders?.reduce((sum, o) => sum + parseFloat(o.total_amount || 0), 0) || 0;
         const { data: weekOrders } = await supabase.from("orders").select("total_amount").gte("delivery_date", weekAgo).eq("status", "completed");
         const totalOrdersWeek = weekOrders?.length || 0;
-        const totalRevenueWeek = weekOrders?.reduce((sum, o) => sum + (o.total_amount || 0), 0) || 0;
+        const totalRevenueWeek = weekOrders?.reduce((sum, o) => sum + parseFloat(o.total_amount || 0), 0) || 0;
         const { count: totalDrivers } = await supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", "driver");
         const { data: activeDriversData } = await supabase.from("orders").select("driver_id").gte("updated_at", weekAgo).eq("status", "completed").not("driver_id", "is", null);
         const activeDrivers = new Set(activeDriversData?.map(o => o.driver_id) || []).size;
         const { data: pendingPaymentsData } = await supabase.from("driver_payments").select("net_amount").eq("payment_status", "pending");
-        const pendingPayments = pendingPaymentsData?.reduce((sum, p) => sum + (p.net_amount || 0), 0) || 0;
+        const pendingPayments = pendingPaymentsData?.reduce((sum, p) => sum + parseFloat(p.net_amount || 0), 0) || 0;
         const { count: pendingYappiApprovals } = await supabase.from("orders").select("*", { count: "exact", head: true }).in("status", ["waiting_confirmation", "pending_approval"]).eq("payment_method", "yappi");
         res.json({ totalProducts: totalProducts || 0, lowStockProducts, outOfStockProducts: outOfStockProducts || 0, totalOrdersToday, totalRevenueToday, totalOrdersWeek, totalRevenueWeek, totalDrivers: totalDrivers || 0, activeDrivers, pendingPayments, pendingYappiApprovals: pendingYappiApprovals || 0 });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -877,9 +860,10 @@ app.post("/admin/products/upload-image", authMiddleware, adminMiddleware, async 
         const fileBuffer = Buffer.from(imageBase64, 'base64');
         const contentType = mimeType || 'image/jpeg';
         const { error: uploadError } = await supabase.storage.from('product-images').upload(fileName, fileBuffer, { contentType, upsert: true });
-        if (uploadError) { console.error('? Error subiendo imagen:', JSON.stringify(uploadError)); throw uploadError; }
+        if (uploadError) { console.error('❌ Error subiendo imagen:', JSON.stringify(uploadError)); throw uploadError; }
         const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(fileName);
-        console.log('? Imagen subida:', urlData.publicUrl); res.json({ success: true, image_url: urlData.publicUrl });
+        console.log('✅ Imagen subida:', urlData.publicUrl);
+        res.json({ success: true, image_url: urlData.publicUrl });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -913,7 +897,7 @@ app.post("/admin/drivers/payments/calculate", authMiddleware, adminMiddleware, a
         if (ordersError) throw ordersError;
         const totalOrders = orders?.length || 0;
         const totalBasePayment = totalOrders * 2.50;
-        const totalTips = orders?.reduce((sum, o) => sum + (o.tip_amount || 0), 0) || 0;
+        const totalTips = orders?.reduce((sum, o) => sum + parseFloat(o.tip_amount || 0), 0) || 0;
         const platformCommission = totalBasePayment * 0.10;
         const netAmount = totalBasePayment * 0.90 + totalTips;
         const { data: payment, error: upsertError } = await supabase.from("driver_payments").upsert({ driver_id, week_start, week_end: weekEnd.toISOString().split("T")[0], total_orders: totalOrders, total_base_payment: totalBasePayment, total_tips: totalTips, platform_commission: platformCommission, net_amount: netAmount, payment_status: "pending" }, { onConflict: "driver_id,week_start" }).select().single();
@@ -954,13 +938,13 @@ app.get("/admin/drivers/list", authMiddleware, adminMiddleware, async (req, res)
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     try {
         const { amount, currency = 'usd' } = req.body;
-        console.log(`ðŸ’³ Stripe create-intent: amount=${amount} currency=${currency}`);
+        console.log(`💳 Stripe create-intent: amount=${amount} currency=${currency}`);
         if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto invalido' });
         const paymentIntent = await stripe.paymentIntents.create({ amount, currency, metadata: { userId: req.user.userId } });
-        console.log(`âœ… PaymentIntent creado: ${paymentIntent.id}`);
+        console.log(`✅ PaymentIntent creado: ${paymentIntent.id}`);
         res.json({ clientSecret: paymentIntent.client_secret });
     } catch (error) {
-        console.error('âŒ Stripe error:', error.message);
+        console.error('❌ Stripe error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -980,18 +964,15 @@ app.get("/debug/users", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`
-â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—
-â•‘   ðŸŒ± AGROAPP BACKEND v2.0             â•‘
-â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£
-â•‘   âœ… Puerto: ${PORT}                      â•‘
-â•‘   ðŸ—ºï¸  Zonas David: Norte/Centro/Sur    â•‘
-â•‘   â° Corte: 12pm y 6pm automatico     â•‘
-â•‘   ðŸ“¦ Bloques: max 8 pedidos/zona      â•‘
-â•‘   ðŸ’³ Stripe: LIVE                      â•‘
-â•‘   ðŸ“± YAPPI: CONFIGURADO                â•‘
-â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+╔════════════════════════════════════════╗
+║   🌱 AGROAPP BACKEND v2.0             ║
+╠════════════════════════════════════════╣
+║   ✅ Puerto: ${PORT}                      ║
+║   🗺️  Zonas David: Norte/Centro/Sur    ║
+║   ⏰ Corte: 12pm y 6pm automatico     ║
+║   📦 Bloques: max 8 pedidos/zona      ║
+║   💳 Stripe: LIVE                      ║
+║   📱 YAPPI: CONFIGURADO                ║
+╚════════════════════════════════════════╝
     `);
 });
-
-
-
