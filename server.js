@@ -361,7 +361,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
         const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
         if (product) totalAmount += product.price * item.quantity;
     }
-    totalAmount += finalTipAmount; console.log(`?? totalAmount despues de tip: ${totalAmount}, productos: ${totalAmount - finalTipAmount}`);
+    totalAmount += parseFloat(finalTipAmount); console.log(`?? totalAmount despues de tip: ${totalAmount}, productos: ${totalAmount - finalTipAmount}`);
 
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
@@ -482,7 +482,7 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
             totalAmount += product.price * item.quantity;
         }
     }
-    totalAmount += finalTipAmount; console.log(`?? totalAmount despues de tip: ${totalAmount}, productos: ${totalAmount - finalTipAmount}`);
+    totalAmount += parseFloat(finalTipAmount); console.log(`?? totalAmount despues de tip: ${totalAmount}, productos: ${totalAmount - finalTipAmount}`);
 
     try {
         const { data: order, error: orderError } = await supabase.from("orders").insert({
