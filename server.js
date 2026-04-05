@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -10,7 +10,7 @@ require("dotenv").config();
 const app = express();
 
 app.use((req, res, next) => {
-    console.log(`📍 [${new Date().toISOString()}] ${req.method} ${req.url}`);
+    console.log(`ðŸ“ [${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
 });
 
@@ -20,7 +20,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 app.get("/", (req, res) => {
-    res.json({ message: "🌱 API de AgroApp funcionando correctamente", version: "2.0.0", status: "online" });
+    res.json({ message: "ðŸŒ± API de AgroApp funcionando correctamente", version: "2.0.0", status: "online" });
 });
 
 app.get("/health", (req, res) => {
@@ -32,27 +32,27 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!supabaseUrl || !supabaseKey || !JWT_SECRET) {
-    console.error("❌ ERROR: Variables de entorno faltantes");
+    console.error("âŒ ERROR: Variables de entorno faltantes");
     process.exit(1);
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
-console.log("✅ Supabase conectado");
+console.log("âœ… Supabase conectado");
 
 // ==================== HELPERS ====================
 
 // Detecta zona de David por coordenadas GPS
 function getDavidZone(lat, lng) {
     if (!lat || !lng) return 'centro';
-    // Norte de David (lat > 8.440) → Chiriquí, Dolega, Los Algarrobos
+    // Norte de David (lat > 8.440) â†’ ChiriquÃ­, Dolega, Los Algarrobos
     if (lat > 8.440) return 'norte';
-    // Sur de David (lat < 8.415) → Pedregal, La Barqueta, San Mateo
+    // Sur de David (lat < 8.415) â†’ Pedregal, La Barqueta, San Mateo
     if (lat < 8.415) return 'sur';
-    // Centro de David → Área central, San Pablo, Santa Marta
+    // Centro de David â†’ Ãrea central, San Pablo, Santa Marta
     return 'centro';
 }
 
-// Calcula ventana de entrega según hora del pedido (hora Panama UTC-5)
+// Calcula ventana de entrega segÃºn hora del pedido (hora Panama UTC-5)
 function getDeliveryWindow(orderTime) {
     const panamaOffset = -5 * 60; // UTC-5 en minutos
     const utcMinutes = orderTime.getUTCHours() * 60 + orderTime.getUTCMinutes();
@@ -68,22 +68,22 @@ function getDeliveryWindow(orderTime) {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowDate = tomorrow.toISOString().split('T')[0];
 
-    // 8am-12pm → entrega HOY 2pm-5pm
+    // 8am-12pm â†’ entrega HOY 2pm-5pm
     if (panamaHour >= 8 && panamaHour < 12) {
         return { date: todayDate, start: '14:00', end: '17:00', label: 'hoy entre 2:00pm y 5:00pm' };
     }
-    // 2pm-6pm → entrega MAÑANA 9am-12pm
+    // 2pm-6pm â†’ entrega MAÃ‘ANA 9am-12pm
     if (panamaHour >= 14 && panamaHour < 18) {
-        return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'mañana entre 9:00am y 12:00pm' };
+        return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'maÃ±ana entre 9:00am y 12:00pm' };
     }
-    // Fuera de horario → MAÑANA 9am-12pm
-    return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'mañana entre 9:00am y 12:00pm' };
+    // Fuera de horario â†’ MAÃ‘ANA 9am-12pm
+    return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'maÃ±ana entre 9:00am y 12:00pm' };
 }
 
 // ==================== CRON JOB - AGRUPACION POR ZONA ====================
 
 async function agruparPedidosPorZona() {
-    console.log(`🔄 [${new Date().toISOString()}] Iniciando agrupación de pedidos por zona...`);
+    console.log(`ðŸ”„ [${new Date().toISOString()}] Iniciando agrupaciÃ³n de pedidos por zona...`);
     try {
         const now = new Date();
         const panamaOffset = -5 * 60;
@@ -91,26 +91,26 @@ async function agruparPedidosPorZona() {
         const panamaDate = new Date(panamaMs);
         const panamaHour = panamaDate.getUTCHours();
 
-        // Determinar qué ventana procesar
+        // Determinar quÃ© ventana procesar
         let targetDate, targetStart, targetEnd;
         if (panamaHour === 12) {
-            // Corte 12pm → procesar pedidos de HOY 2pm-5pm
+            // Corte 12pm â†’ procesar pedidos de HOY 2pm-5pm
             targetDate = panamaDate.toISOString().split('T')[0];
             targetStart = '14:00';
             targetEnd = '17:00';
         } else if (panamaHour === 18) {
-            // Corte 6pm → procesar pedidos de MAÑANA 9am-12pm
+            // Corte 6pm â†’ procesar pedidos de MAÃ‘ANA 9am-12pm
             const tomorrow = new Date(panamaDate);
             tomorrow.setDate(tomorrow.getDate() + 1);
             targetDate = tomorrow.toISOString().split('T')[0];
             targetStart = '09:00';
             targetEnd = '12:00';
         } else {
-            console.log('⏰ No es hora de corte, saltando agrupación');
+            console.log('â° No es hora de corte, saltando agrupaciÃ³n');
             return;
         }
 
-        console.log(`📦 Procesando pedidos para ${targetDate} ${targetStart}-${targetEnd}`);
+        console.log(`ðŸ“¦ Procesando pedidos para ${targetDate} ${targetStart}-${targetEnd}`);
 
         // Obtener pedidos confirmados sin paquete asignado para esta ventana
         const { data: pedidos, error } = await supabase
@@ -122,10 +122,10 @@ async function agruparPedidosPorZona() {
             .eq('delivery_window_start', targetStart)
             .is('dynamic_package_id', null);
 
-        if (error) { console.error('❌ Error obteniendo pedidos:', error.message); return; }
-        if (!pedidos || pedidos.length === 0) { console.log('📭 No hay pedidos para agrupar'); return; }
+        if (error) { console.error('âŒ Error obteniendo pedidos:', error.message); return; }
+        if (!pedidos || pedidos.length === 0) { console.log('ðŸ“­ No hay pedidos para agrupar'); return; }
 
-        console.log(`📦 ${pedidos.length} pedidos a agrupar`);
+        console.log(`ðŸ“¦ ${pedidos.length} pedidos a agrupar`);
 
         // Agrupar por zona
         const porZona = { norte: [], centro: [], sur: [] };
@@ -135,7 +135,7 @@ async function agruparPedidosPorZona() {
             porZona[zona].push(p.id);
         }
 
-        // Crear bloques de máximo 8 pedidos por zona
+        // Crear bloques de mÃ¡ximo 8 pedidos por zona
         for (const [zona, ids] of Object.entries(porZona)) {
             if (ids.length === 0) continue;
 
@@ -146,7 +146,7 @@ async function agruparPedidosPorZona() {
             }
 
             for (const bloque of bloques) {
-                // Crear paquete dinámico
+                // Crear paquete dinÃ¡mico
                 const { data: pkg, error: pkgError } = await supabase
                     .from('dynamic_packages')
                     .insert({
@@ -163,7 +163,7 @@ async function agruparPedidosPorZona() {
                     .select()
                     .single();
 
-                if (pkgError) { console.error(`❌ Error creando paquete zona ${zona}:`, pkgError.message); continue; }
+                if (pkgError) { console.error(`âŒ Error creando paquete zona ${zona}:`, pkgError.message); continue; }
 
                 // Asignar pedidos al paquete
                 const packageOrders = bloque.map(orderId => ({
@@ -178,13 +178,13 @@ async function agruparPedidosPorZona() {
                     .update({ dynamic_package_id: pkg.id })
                     .in('id', bloque);
 
-                console.log(`✅ Paquete zona ${zona} creado con ${bloque.length} pedidos`);
+                console.log(`âœ… Paquete zona ${zona} creado con ${bloque.length} pedidos`);
             }
         }
 
-        console.log('✅ Agrupación completada');
+        console.log('âœ… AgrupaciÃ³n completada');
     } catch (e) {
-        console.error('❌ Error en agrupación:', e.message);
+        console.error('âŒ Error en agrupaciÃ³n:', e.message);
     }
 }
 
@@ -351,7 +351,7 @@ app.post("/orders", authMiddleware, async (req, res) => {
         if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente para ${product.name}.` });
     }
 
-    // ✅ Calcular zona y ventana de entrega
+    // âœ… Calcular zona y ventana de entrega
     const zone = getDavidZone(finalLatitude, finalLongitude);
     const window = getDeliveryWindow(new Date());
 
@@ -468,7 +468,7 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
 
     const referenceCode = generateReferenceCode();
 
-    // ✅ Calcular zona y ventana de entrega
+    // âœ… Calcular zona y ventana de entrega
     const zone = getDavidZone(delivery_latitude, delivery_longitude);
     const window = getDeliveryWindow(new Date());
 
@@ -479,7 +479,8 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
         const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
         if (product) {
             productPrices[productId] = product.price;
-            totalAmount += product.price * item.quantity;
+            totalAmount += parseFloat(product.price) * parseFloat(item.quantity);
+            console.log(`?? item: id=${productId} price=${product.price} qty=${item.quantity} sub=${parseFloat(product.price)*parseFloat(item.quantity)}`);
         }
     }
     totalAmount += parseFloat(finalTipAmount); console.log(`?? totalAmount despues de tip: ${totalAmount}, productos: ${totalAmount - finalTipAmount}`);
@@ -550,11 +551,11 @@ app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res
 app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
     try {
-        console.log(`✅ Aprobando pago YAPPI: ${orderId}`);
+        console.log(`âœ… Aprobando pago YAPPI: ${orderId}`);
         const { data, error } = await supabase.from("orders").update({ payment_status: "completed", status: "pending", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
-        if (error) { console.error("❌ Error aprobando:", error.message); throw error; }
+        if (error) { console.error("âŒ Error aprobando:", error.message); throw error; }
         if (!data) return res.status(404).json({ error: "Pedido no encontrado" });
-        console.log(`✅ Pago aprobado OK: ${orderId}`);
+        console.log(`âœ… Pago aprobado OK: ${orderId}`);
         res.json({ success: true, message: "Pago YAPPI aprobado", order: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -562,7 +563,7 @@ app.post("/admin/yappi/:orderId/approve", authMiddleware, adminMiddleware, async
 app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
     const { reason } = req.body;
-    console.log(`❌ Rechazando pago YAPPI: ${orderId}, motivo: ${reason}`);
+    console.log(`âŒ Rechazando pago YAPPI: ${orderId}, motivo: ${reason}`);
     try {
         const { data: existingOrder, error: fetchError } = await supabase.from("orders").select("id, status, payment_status").eq("id", orderId).single();
         if (fetchError || !existingOrder) return res.status(404).json({ error: "Pedido no encontrado" });
@@ -577,10 +578,10 @@ app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async 
         const { data, error } = await supabase.from("orders").update({ payment_status: "rejected", status: "cancelled", notes: rejectNote, updated_at: new Date().toISOString() }).eq("id", orderId).select();
         if (error) throw error;
 
-        console.log(`✅ Pago rechazado OK: ${orderId}`);
+        console.log(`âœ… Pago rechazado OK: ${orderId}`);
         res.json({ success: true, message: "Pago rechazado y stock devuelto", rejectedNote: rejectNote });
     } catch (e) {
-        console.error("❌ Exception en reject:", e.message);
+        console.error("âŒ Exception en reject:", e.message);
         res.status(500).json({ error: e.message });
     }
 });
@@ -953,13 +954,13 @@ app.get("/admin/drivers/list", authMiddleware, adminMiddleware, async (req, res)
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     try {
         const { amount, currency = 'usd' } = req.body;
-        console.log(`💳 Stripe create-intent: amount=${amount} currency=${currency}`);
+        console.log(`ðŸ’³ Stripe create-intent: amount=${amount} currency=${currency}`);
         if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto invalido' });
         const paymentIntent = await stripe.paymentIntents.create({ amount, currency, metadata: { userId: req.user.userId } });
-        console.log(`✅ PaymentIntent creado: ${paymentIntent.id}`);
+        console.log(`âœ… PaymentIntent creado: ${paymentIntent.id}`);
         res.json({ clientSecret: paymentIntent.client_secret });
     } catch (error) {
-        console.error('❌ Stripe error:', error.message);
+        console.error('âŒ Stripe error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -979,15 +980,16 @@ app.get("/debug/users", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`
-╔════════════════════════════════════════╗
-║   🌱 AGROAPP BACKEND v2.0             ║
-╠════════════════════════════════════════╣
-║   ✅ Puerto: ${PORT}                      ║
-║   🗺️  Zonas David: Norte/Centro/Sur    ║
-║   ⏰ Corte: 12pm y 6pm automatico     ║
-║   📦 Bloques: max 8 pedidos/zona      ║
-║   💳 Stripe: LIVE                      ║
-║   📱 YAPPI: CONFIGURADO                ║
-╚════════════════════════════════════════╝
+â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—
+â•‘   ðŸŒ± AGROAPP BACKEND v2.0             â•‘
+â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£
+â•‘   âœ… Puerto: ${PORT}                      â•‘
+â•‘   ðŸ—ºï¸  Zonas David: Norte/Centro/Sur    â•‘
+â•‘   â° Corte: 12pm y 6pm automatico     â•‘
+â•‘   ðŸ“¦ Bloques: max 8 pedidos/zona      â•‘
+â•‘   ðŸ’³ Stripe: LIVE                      â•‘
+â•‘   ðŸ“± YAPPI: CONFIGURADO                â•‘
+â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     `);
 });
+
