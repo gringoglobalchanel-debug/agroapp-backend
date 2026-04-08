@@ -143,8 +143,6 @@ async function agruparPedidosPorZona() {
             return;
         }
 
-        console.log(`📦 Procesando pedidos para ${targetDate} ${targetStart}-${targetEnd}`);
-
         const { data: pedidos, error } = await supabase
             .from('orders')
             .select('id, zone, delivery_window_date, delivery_window_start')
@@ -156,8 +154,6 @@ async function agruparPedidosPorZona() {
 
         if (error) { console.error('❌ Error obteniendo pedidos:', error.message); return; }
         if (!pedidos || pedidos.length === 0) { console.log('📭 No hay pedidos para agrupar'); return; }
-
-        console.log(`📦 ${pedidos.length} pedidos a agrupar`);
 
         const porZona = { norte: [], centro: [], sur: [] };
         for (const p of pedidos) {
@@ -580,12 +576,8 @@ app.post("/admin/orders/:orderId/assign-driver", authMiddleware, adminMiddleware
         if (pkgError) throw pkgError;
         await supabase.from("package_orders").insert({ package_id: pkg.id, order_id: orderId });
         await supabase.from("orders").update({ dynamic_package_id: pkg.id, driver_id: driver_id, updated_at: new Date().toISOString() }).eq("id", orderId);
-        console.log(`✅ Pedido ${orderId} asignado manualmente al driver ${driver.full_name}`);
         res.json({ success: true, message: `Pedido asignado a ${driver.full_name}`, packageId: pkg.id });
-    } catch (e) {
-        console.error("❌ Error en asignacion manual:", e.message);
-        res.status(500).json({ error: e.message });
-    }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ==================== VENDEDOR ====================
@@ -987,7 +979,7 @@ app.get("/admin/orders/pending", authMiddleware, adminMiddleware, async (req, re
 
 app.get("/banners", async (req, res) => {
     try {
-        const { data, error } = await supabase.from("banners").select("id, slot, title, image_url, is_active").eq("is_active", true).order("slot");
+        const { data, error } = await supabase.from("banners").select("id, slot, title, image_url, is_active, price, product_id, link_url").eq("is_active", true).order("slot");
         if (error) throw error;
         res.json(data);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1001,9 +993,10 @@ app.get("/admin/banners", authMiddleware, adminMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ✅ ACTUALIZADO: ahora recibe title, price, product_id, link_url además de la imagen
 app.patch("/admin/banners/:id", authMiddleware, adminMiddleware, async (req, res) => {
     const { id } = req.params;
-    const { imageBase64, mimeType, title, is_active } = req.body;
+    const { imageBase64, mimeType, title, is_active, price, product_id, link_url } = req.body;
     try {
         let imageUrl = null;
         if (imageBase64) {
@@ -1019,6 +1012,9 @@ app.patch("/admin/banners/:id", authMiddleware, adminMiddleware, async (req, res
         if (imageUrl) updates.image_url = imageUrl;
         if (title !== undefined) updates.title = title;
         if (is_active !== undefined) updates.is_active = is_active;
+        if (price !== undefined) updates.price = price ? parseFloat(price) : null;
+        if (product_id !== undefined) updates.product_id = product_id ? parseInt(product_id) : null;
+        if (link_url !== undefined) updates.link_url = link_url;
         const { data, error } = await supabase.from("banners").update(updates).eq("id", id).select().single();
         if (error) throw error;
         res.json({ success: true, banner: data });
