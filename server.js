@@ -738,16 +738,40 @@ app.post("/driver/orders/:orderId/start-trip", authMiddleware, driverMiddleware,
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ✅ CORREGIDO: logs detallados para diagnosticar error de guardado
 app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) => {
     const { orderId, latitude, longitude } = req.body;
-    if (!orderId || latitude === undefined || longitude === undefined) return res.status(400).json({ error: "orderId, latitude y longitude requeridos" });
+    if (!orderId || latitude === undefined || longitude === undefined) {
+        console.error('❌ driver/location: faltan campos', { orderId, latitude, longitude });
+        return res.status(400).json({ error: "orderId, latitude y longitude requeridos" });
+    }
     try {
         const { data: order, error: orderError } = await supabase.from("orders").select("driver_id").eq("id", orderId).single();
-        if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
-        if (order.driver_id !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido" });
-        await supabase.from("driver_locations").upsert({ driver_id: req.user.userId, order_id: orderId, latitude, longitude, updated_at: new Date().toISOString() }, { onConflict: "order_id" });
+        if (orderError || !order) {
+            console.error('❌ driver/location: pedido no encontrado', orderId, orderError?.message);
+            return res.status(404).json({ error: "Pedido no encontrado" });
+        }
+        if (order.driver_id !== req.user.userId) {
+            console.error('❌ driver/location: driver no coincide', { orderDriverId: order.driver_id, userId: req.user.userId });
+            return res.status(403).json({ error: "No tienes este pedido" });
+        }
+        const { data, error: upsertError } = await supabase.from("driver_locations").upsert({
+            driver_id: req.user.userId,
+            order_id: orderId,
+            latitude,
+            longitude,
+            updated_at: new Date().toISOString()
+        }, { onConflict: "order_id" }).select();
+        if (upsertError) {
+            console.error('❌ driver/location: error upsert', JSON.stringify(upsertError));
+            return res.status(500).json({ error: upsertError.message });
+        }
+        console.log('✅ driver/location guardado:', orderId, latitude, longitude);
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+        console.error('❌ driver/location: excepcion', e.message);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.get("/driver/location/:orderId", authMiddleware, async (req, res) => {
@@ -993,7 +1017,6 @@ app.get("/admin/banners", authMiddleware, adminMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ✅ ACTUALIZADO: ahora recibe title, price, product_id, link_url además de la imagen
 app.patch("/admin/banners/:id", authMiddleware, adminMiddleware, async (req, res) => {
     const { id } = req.params;
     const { imageBase64, mimeType, title, is_active, price, product_id, link_url } = req.body;
