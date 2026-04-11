@@ -39,8 +39,6 @@ if (!supabaseUrl || !supabaseKey || !JWT_SECRET) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 console.log("✅ Supabase conectado");
 
-// ==================== FIREBASE FCM ====================
-
 async function getFcmAccessToken() {
     const { GoogleAuth } = require('google-auth-library');
     const auth = new GoogleAuth({
@@ -63,30 +61,14 @@ async function sendPushNotification(fcmToken, title, body) {
         const projectId = process.env.FIREBASE_PROJECT_ID;
         const response = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                message: {
-                    token: fcmToken,
-                    notification: { title, body },
-                    android: { priority: 'high' },
-                }
-            })
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: { token: fcmToken, notification: { title, body }, android: { priority: 'high' } } })
         });
         const result = await response.json();
-        if (!response.ok) {
-            console.error('❌ FCM error:', JSON.stringify(result));
-        } else {
-            console.log('✅ Notificación enviada');
-        }
-    } catch (e) {
-        console.error('❌ Error enviando notificación:', e.message);
-    }
+        if (!response.ok) console.error('❌ FCM error:', JSON.stringify(result));
+        else console.log('✅ Notificacion enviada');
+    } catch (e) { console.error('❌ Error enviando notificacion:', e.message); }
 }
-
-// ==================== HELPERS ====================
 
 function getDavidZone(lat, lng) {
     if (!lat || !lng) return 'centro';
@@ -100,25 +82,16 @@ function getDeliveryWindow(orderTime) {
     const utcMinutes = orderTime.getUTCHours() * 60 + orderTime.getUTCMinutes();
     const panamaMinutes = ((utcMinutes + panamaOffset) + 24 * 60) % (24 * 60);
     const panamaHour = Math.floor(panamaMinutes / 60);
-
     const today = new Date(orderTime);
     today.setUTCMinutes(today.getUTCMinutes() + panamaOffset);
     const todayDate = today.toISOString().split('T')[0];
-
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowDate = tomorrow.toISOString().split('T')[0];
-
-    if (panamaHour >= 8 && panamaHour < 12) {
-        return { date: todayDate, start: '14:00', end: '17:00', label: 'hoy entre 2:00pm y 5:00pm' };
-    }
-    if (panamaHour >= 14 && panamaHour < 18) {
-        return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'manana entre 9:00am y 12:00pm' };
-    }
+    if (panamaHour >= 8 && panamaHour < 12) return { date: todayDate, start: '14:00', end: '17:00', label: 'hoy entre 2:00pm y 5:00pm' };
+    if (panamaHour >= 14 && panamaHour < 18) return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'manana entre 9:00am y 12:00pm' };
     return { date: tomorrowDate, start: '09:00', end: '12:00', label: 'manana entre 9:00am y 12:00pm' };
 }
-
-// ==================== CRON JOB ====================
 
 async function agruparPedidosPorZona() {
     console.log(`🔄 [${new Date().toISOString()}] Iniciando agrupacion de pedidos por zona...`);
@@ -128,53 +101,22 @@ async function agruparPedidosPorZona() {
         const panamaMs = now.getTime() + panamaOffset * 60 * 1000;
         const panamaDate = new Date(panamaMs);
         const panamaHour = panamaDate.getUTCHours();
-
         let targetDate, targetStart, targetEnd;
-        if (panamaHour === 12) {
-            targetDate = panamaDate.toISOString().split('T')[0];
-            targetStart = '14:00'; targetEnd = '17:00';
-        } else if (panamaHour === 18) {
-            const tomorrow = new Date(panamaDate);
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            targetDate = tomorrow.toISOString().split('T')[0];
-            targetStart = '09:00'; targetEnd = '12:00';
-        } else {
-            console.log('⏰ No es hora de corte, saltando agrupacion');
-            return;
-        }
-
-        const { data: pedidos, error } = await supabase
-            .from('orders')
-            .select('id, zone, delivery_window_date, delivery_window_start')
-            .eq('status', 'pending')
-            .eq('payment_status', 'completed')
-            .eq('delivery_window_date', targetDate)
-            .eq('delivery_window_start', targetStart)
-            .is('dynamic_package_id', null);
-
+        if (panamaHour === 12) { targetDate = panamaDate.toISOString().split('T')[0]; targetStart = '14:00'; targetEnd = '17:00'; }
+        else if (panamaHour === 18) { const tomorrow = new Date(panamaDate); tomorrow.setDate(tomorrow.getDate() + 1); targetDate = tomorrow.toISOString().split('T')[0]; targetStart = '09:00'; targetEnd = '12:00'; }
+        else { console.log('⏰ No es hora de corte, saltando agrupacion'); return; }
+        const { data: pedidos, error } = await supabase.from('orders').select('id, zone, delivery_window_date, delivery_window_start').eq('status', 'pending').eq('payment_status', 'completed').eq('delivery_window_date', targetDate).eq('delivery_window_start', targetStart).is('dynamic_package_id', null);
         if (error) { console.error('❌ Error obteniendo pedidos:', error.message); return; }
         if (!pedidos || pedidos.length === 0) { console.log('📭 No hay pedidos para agrupar'); return; }
-
         const porZona = { norte: [], centro: [], sur: [] };
-        for (const p of pedidos) {
-            const zona = p.zone || 'centro';
-            if (!porZona[zona]) porZona[zona] = [];
-            porZona[zona].push(p.id);
-        }
-
+        for (const p of pedidos) { const zona = p.zone || 'centro'; if (!porZona[zona]) porZona[zona] = []; porZona[zona].push(p.id); }
         for (const [zona, ids] of Object.entries(porZona)) {
             if (ids.length === 0) continue;
             const bloques = [];
             for (let i = 0; i < ids.length; i += 8) bloques.push(ids.slice(i, i + 8));
-
             for (const bloque of bloques) {
-                const { data: pkg, error: pkgError } = await supabase
-                    .from('dynamic_packages')
-                    .insert({ current_size: bloque.length, max_size: 8, status: 'available', zone: zona, delivery_date: targetDate, delivery_window_start: targetStart, delivery_window_end: targetEnd, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-                    .select().single();
-
+                const { data: pkg, error: pkgError } = await supabase.from('dynamic_packages').insert({ current_size: bloque.length, max_size: 8, status: 'available', zone: zona, delivery_date: targetDate, delivery_window_start: targetStart, delivery_window_end: targetEnd, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }).select().single();
                 if (pkgError) { console.error(`❌ Error creando paquete zona ${zona}:`, pkgError.message); continue; }
-
                 await supabase.from('package_orders').insert(bloque.map(orderId => ({ package_id: pkg.id, order_id: orderId })));
                 await supabase.from('orders').update({ dynamic_package_id: pkg.id }).in('id', bloque);
                 console.log(`✅ Paquete zona ${zona} creado con ${bloque.length} pedidos`);
@@ -194,16 +136,11 @@ setInterval(async () => {
     if ((panamaHour === 12 || panamaHour === 18) && panamaMin === 0) await agruparPedidosPorZona();
 }, 60 * 1000);
 
-// ==================== MIDDLEWARES ====================
-
 const authMiddleware = async (req, res, next) => {
     const token = req.headers.authorization?.replace("Bearer ", "");
     if (!token) return res.status(401).json({ error: "No token" });
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded;
-        next();
-    } catch { res.status(401).json({ error: "Token invalido" }); }
+    try { const decoded = jwt.verify(token, JWT_SECRET); req.user = decoded; next(); }
+    catch { res.status(401).json({ error: "Token invalido" }); }
 };
 
 const driverMiddleware = async (req, res, next) => {
@@ -217,8 +154,6 @@ const adminMiddleware = async (req, res, next) => {
     if (error || user.role !== "admin") return res.status(403).json({ error: "No autorizado. Solo administradores." });
     next();
 };
-
-// ==================== AUTH ====================
 
 app.post("/auth/register", async (req, res) => {
     const { full_name: name, email, password, phone, address, user_type } = req.body;
@@ -243,10 +178,7 @@ app.post("/auth/login", async (req, res) => {
         if (password === user.password_hash) { valid = true; }
         else { try { valid = await bcrypt.compare(password, user.password_hash); } catch (e) {} }
         if (!valid) return res.status(401).json({ error: "Credenciales invalidas" });
-        const token = jwt.sign(
-            { userId: user.id, role: user.role, userType: user.user_type || "cliente", name: user.full_name, address: user.address },
-            JWT_SECRET, { expiresIn: "7d" }
-        );
+        const token = jwt.sign({ userId: user.id, role: user.role, userType: user.user_type || "cliente", name: user.full_name, address: user.address }, JWT_SECRET, { expiresIn: "7d" });
         res.json({ token, userId: user.id, name: user.full_name, role: user.role, address: user.address, user_type: user.user_type || "cliente", avatar_url: user.avatar_url || null });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -320,8 +252,6 @@ app.post("/auth/fcm-token", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== PRODUCTOS ====================
-
 app.get("/products", async (req, res) => {
     try {
         const { data, error } = await supabase.from("products").select("*, categories(name)").eq("is_available", true).order("category_id");
@@ -330,8 +260,6 @@ app.get("/products", async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== PEDIDOS ====================
-
 app.post("/orders", authMiddleware, async (req, res) => {
     const { items, paymentMethod, payment_method, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, notes, tip_amount } = req.body;
     const finalPaymentMethod = paymentMethod || payment_method;
@@ -339,20 +267,16 @@ app.post("/orders", authMiddleware, async (req, res) => {
     const finalTipAmount = parseFloat(tip_amount) || 0;
     const finalLatitude = delivery_latitude || null;
     const finalLongitude = delivery_longitude || null;
-
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
     if (!finalPaymentMethod) return res.status(400).json({ error: "payment_method es requerido" });
-
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product, error: productError } = await supabase.from("products").select("stock, name").eq("id", productId).single();
         if (productError || !product) return res.status(400).json({ error: `Producto no encontrado: ID ${productId}` });
         if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente para ${product.name}.` });
     }
-
     const zone = getDavidZone(finalLatitude, finalLongitude);
     const window = getDeliveryWindow(new Date());
-
     let totalAmount = 0;
     for (const item of items) {
         const productId = item.productId || item.product_id;
@@ -361,29 +285,18 @@ app.post("/orders", authMiddleware, async (req, res) => {
     }
     totalAmount += finalTipAmount;
     totalAmount = parseFloat(totalAmount.toFixed(2));
-
     try {
-        const { data: order, error: orderError } = await supabase.from("orders").insert({
-            user_id: req.user.userId, payment_method: finalPaymentMethod, payment_status: "completed",
-            delivery_address: finalDeliveryAddress || req.user.address,
-            delivery_latitude: finalLatitude, delivery_longitude: finalLongitude,
-            delivery_date: window.date, total_amount: totalAmount, tip_amount: finalTipAmount,
-            notes: notes || null, status: "pending", zone: zone,
-            delivery_window_start: window.start, delivery_window_end: window.end, delivery_window_date: window.date
-        }).select().single();
+        const { data: order, error: orderError } = await supabase.from("orders").insert({ user_id: req.user.userId, payment_method: finalPaymentMethod, payment_status: "completed", delivery_address: finalDeliveryAddress || req.user.address, delivery_latitude: finalLatitude, delivery_longitude: finalLongitude, delivery_date: window.date, total_amount: totalAmount, tip_amount: finalTipAmount, notes: notes || null, status: "pending", zone: zone, delivery_window_start: window.start, delivery_window_end: window.end, delivery_window_date: window.date }).select().single();
         if (orderError) throw orderError;
-
         const productPrices = {};
         for (const item of items) {
             const productId = item.productId || item.product_id;
             const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
             if (product) productPrices[productId] = product.price;
         }
-
         const orderItems = items.map(item => ({ order_id: order.id, product_id: item.productId || item.product_id, quantity: item.quantity, unit_price: productPrices[item.productId || item.product_id] || 0 }));
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
-
         for (const item of items) {
             const productId = item.productId || item.product_id;
             const { data: product } = await supabase.from("products").select("stock").eq("id", productId).single();
@@ -392,7 +305,6 @@ app.post("/orders", authMiddleware, async (req, res) => {
             await supabase.from("products").update({ stock: newStock }).eq("id", productId);
             await supabase.from("inventory_logs").insert({ product_id: productId, previous_quantity: previousStock, new_quantity: newStock, change_type: "sale", order_id: order.id, notes: `Venta en pedido ${order.id}`, created_by: req.user.userId });
         }
-
         res.json({ message: "Pedido creado", orderId: order.id, deliveryDate: window.date, deliveryWindow: window.label, zone });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -431,8 +343,6 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== YAPPI ====================
-
 function generateReferenceCode() {
     const date = new Date();
     const year = date.getFullYear();
@@ -446,48 +356,31 @@ app.post("/orders/pending-yappi", authMiddleware, async (req, res) => {
     const { items, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, tip_amount } = req.body;
     const finalDeliveryAddress = deliveryAddress || delivery_address;
     const finalTipAmount = parseFloat(tip_amount) || 0;
-
     if (!items || items.length === 0) return res.status(400).json({ error: "Carrito vacio" });
-
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product } = await supabase.from("products").select("stock, name").eq("id", productId).single();
         if (!product) return res.status(400).json({ error: `Producto no encontrado: ID ${productId}` });
         if (product.stock < item.quantity) return res.status(400).json({ error: `Stock insuficiente` });
     }
-
     const referenceCode = generateReferenceCode();
     const zone = getDavidZone(delivery_latitude, delivery_longitude);
     const window = getDeliveryWindow(new Date());
-
     let totalAmount = 0;
     const productPrices = {};
     for (const item of items) {
         const productId = item.productId || item.product_id;
         const { data: product } = await supabase.from("products").select("price").eq("id", productId).single();
-        if (product) {
-            productPrices[productId] = product.price;
-            totalAmount += parseFloat(product.price) * parseFloat(item.quantity);
-        }
+        if (product) { productPrices[productId] = product.price; totalAmount += parseFloat(product.price) * parseFloat(item.quantity); }
     }
     totalAmount += finalTipAmount;
     totalAmount = parseFloat(totalAmount.toFixed(2));
-
     try {
-        const { data: order, error: orderError } = await supabase.from("orders").insert({
-            user_id: req.user.userId, payment_method: "yappi", payment_status: "pending",
-            delivery_address: finalDeliveryAddress || req.user.address,
-            delivery_latitude: delivery_latitude || null, delivery_longitude: delivery_longitude || null,
-            delivery_date: window.date, total_amount: totalAmount, tip_amount: finalTipAmount,
-            reference_code: referenceCode, status: "waiting_confirmation", zone: zone,
-            delivery_window_start: window.start, delivery_window_end: window.end, delivery_window_date: window.date
-        }).select().single();
+        const { data: order, error: orderError } = await supabase.from("orders").insert({ user_id: req.user.userId, payment_method: "yappi", payment_status: "pending", delivery_address: finalDeliveryAddress || req.user.address, delivery_latitude: delivery_latitude || null, delivery_longitude: delivery_longitude || null, delivery_date: window.date, total_amount: totalAmount, tip_amount: finalTipAmount, reference_code: referenceCode, status: "waiting_confirmation", zone: zone, delivery_window_start: window.start, delivery_window_end: window.end, delivery_window_date: window.date }).select().single();
         if (orderError) throw orderError;
-
         const orderItems = items.map(item => ({ order_id: order.id, product_id: item.productId || item.product_id, quantity: item.quantity, unit_price: productPrices[item.productId || item.product_id] || 0 }));
         const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
         if (itemsError) throw itemsError;
-
         res.json({ orderId: order.id, referenceCode, totalAmount, deliveryDate: window.date, deliveryWindow: window.label, zone });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -503,22 +396,11 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== ADMIN - YAPPI ====================
-
 app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const { data, error } = await supabase.from("orders").select("id, total_amount, tip_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, zone, delivery_window_start, delivery_window_end, delivery_window_date, users!orders_user_id_fkey(full_name, phone, email)").eq("payment_method", "yappi").in("status", ["waiting_confirmation", "pending_approval"]).order("created_at", { ascending: false });
         if (error) throw error;
-        res.json(data.map(o => ({
-            id: o.id, total_amount: o.total_amount, tip_amount: o.tip_amount || 0,
-            reference_code: o.reference_code, created_at: o.created_at,
-            payment_confirmed_at: o.payment_confirmed_at, delivery_address: o.delivery_address,
-            status: o.status, zone: o.zone,
-            delivery_window: o.delivery_window_date ? `${o.delivery_window_date} ${o.delivery_window_start}-${o.delivery_window_end}` : null,
-            customer_name: o.users?.full_name || "Cliente",
-            customer_phone: o.users?.phone || "",
-            customer_email: o.users?.email || ""
-        })));
+        res.json(data.map(o => ({ id: o.id, total_amount: o.total_amount, tip_amount: o.tip_amount || 0, reference_code: o.reference_code, created_at: o.created_at, payment_confirmed_at: o.payment_confirmed_at, delivery_address: o.delivery_address, status: o.status, zone: o.zone, delivery_window: o.delivery_window_date ? `${o.delivery_window_date} ${o.delivery_window_start}-${o.delivery_window_end}` : null, customer_name: o.users?.full_name || "Cliente", customer_phone: o.users?.phone || "", customer_email: o.users?.email || "" })));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -550,16 +432,10 @@ app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async 
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== ADMIN MANUAL AGRUPACION ====================
-
 app.post("/admin/agrupar-pedidos", authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        await agruparPedidosPorZona();
-        res.json({ success: true, message: "Agrupacion ejecutada manualmente" });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    try { await agruparPedidosPorZona(); res.json({ success: true, message: "Agrupacion ejecutada manualmente" }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-// ==================== ADMIN - ASIGNACION MANUAL A DRIVER ====================
 
 app.post("/admin/orders/:orderId/assign-driver", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
@@ -569,7 +445,7 @@ app.post("/admin/orders/:orderId/assign-driver", authMiddleware, adminMiddleware
         const { data: order, error: orderError } = await supabase.from("orders").select("id, status, payment_status, zone, delivery_window_start, delivery_window_end, delivery_window_date, delivery_date, dynamic_package_id").eq("id", orderId).single();
         if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.payment_status !== "completed") return res.status(400).json({ error: "El pedido no tiene pago completado" });
-        if (order.dynamic_package_id) return res.status(400).json({ error: "El pedido ya está asignado a un paquete" });
+        if (order.dynamic_package_id) return res.status(400).json({ error: "El pedido ya esta asignado a un paquete" });
         const { data: driver, error: driverError } = await supabase.from("users").select("id, full_name, user_type").eq("id", driver_id).single();
         if (driverError || !driver || driver.user_type !== "driver") return res.status(404).json({ error: "Driver no encontrado" });
         const { data: pkg, error: pkgError } = await supabase.from("dynamic_packages").insert({ current_size: 1, max_size: 8, status: "taken", zone: order.zone || "centro", delivery_date: order.delivery_date, delivery_window_start: order.delivery_window_start, delivery_window_end: order.delivery_window_end, taken_by: driver_id, taken_at: new Date().toISOString(), created_at: new Date().toISOString(), updated_at: new Date().toISOString() }).select().single();
@@ -579,8 +455,6 @@ app.post("/admin/orders/:orderId/assign-driver", authMiddleware, adminMiddleware
         res.json({ success: true, message: `Pedido asignado a ${driver.full_name}`, packageId: pkg.id });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-// ==================== VENDEDOR ====================
 
 app.get("/vendor/orders/by-client", authMiddleware, async (req, res) => {
     if (req.user.role !== "vendedor") return res.status(403).json({ error: "No autorizado" });
@@ -612,30 +486,13 @@ app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== DRIVER - PAQUETES ====================
-
 app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (req, res) => {
     try {
         const { data: packages, error } = await supabase.from("dynamic_packages").select("id, current_size, max_size, status, zone, delivery_date, delivery_window_start, delivery_window_end, created_at, updated_at").eq("status", "available").order("created_at");
         if (error) throw error;
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
             const { data: pkgOrders } = await supabase.from("package_orders").select("order_id, orders(id, user_id, delivery_address, delivery_latitude, delivery_longitude, total_amount, tip_amount, payment_method, created_at, zone, delivery_window_start, delivery_window_end, delivery_window_date, users!orders_user_id_fkey(full_name, phone))").eq("package_id", pkg.id);
-            return {
-                ...pkg,
-                orders: pkgOrders?.map(po => ({
-                    order_id: po.orders?.id, user_id: po.orders?.user_id,
-                    delivery_address: po.orders?.delivery_address,
-                    delivery_latitude: po.orders?.delivery_latitude,
-                    delivery_longitude: po.orders?.delivery_longitude,
-                    total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0,
-                    payment_method: po.orders?.payment_method, created_at: po.orders?.created_at,
-                    zone: po.orders?.zone, delivery_window_start: po.orders?.delivery_window_start,
-                    delivery_window_end: po.orders?.delivery_window_end,
-                    delivery_window_date: po.orders?.delivery_window_date,
-                    customer_name: po.orders?.users?.full_name || "Cliente",
-                    customer_phone: po.orders?.users?.phone || "No disponible"
-                })) || []
-            };
+            return { ...pkg, orders: pkgOrders?.map(po => ({ order_id: po.orders?.id, user_id: po.orders?.user_id, delivery_address: po.orders?.delivery_address, delivery_latitude: po.orders?.delivery_latitude, delivery_longitude: po.orders?.delivery_longitude, total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0, payment_method: po.orders?.payment_method, created_at: po.orders?.created_at, zone: po.orders?.zone, delivery_window_start: po.orders?.delivery_window_start, delivery_window_end: po.orders?.delivery_window_end, delivery_window_date: po.orders?.delivery_window_date, customer_name: po.orders?.users?.full_name || "Cliente", customer_phone: po.orders?.users?.phone || "No disponible" })) || [] };
         }));
         res.json(formattedPackages);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -661,22 +518,7 @@ app.get("/driver/packages/my", authMiddleware, driverMiddleware, async (req, res
         if (error) throw error;
         const formattedPackages = await Promise.all(packages.map(async (pkg) => {
             const { data: pkgOrders } = await supabase.from("package_orders").select("order_id, orders(id, user_id, delivery_address, delivery_latitude, delivery_longitude, total_amount, tip_amount, payment_method, created_at, zone, delivery_window_start, delivery_window_end, delivery_window_date, users!orders_user_id_fkey(full_name, phone))").eq("package_id", pkg.id);
-            return {
-                ...pkg,
-                orders: pkgOrders?.map(po => ({
-                    order_id: po.orders?.id, user_id: po.orders?.user_id,
-                    delivery_address: po.orders?.delivery_address,
-                    delivery_latitude: po.orders?.delivery_latitude,
-                    delivery_longitude: po.orders?.delivery_longitude,
-                    total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0,
-                    payment_method: po.orders?.payment_method, created_at: po.orders?.created_at,
-                    zone: po.orders?.zone, delivery_window_start: po.orders?.delivery_window_start,
-                    delivery_window_end: po.orders?.delivery_window_end,
-                    delivery_window_date: po.orders?.delivery_window_date,
-                    customer_name: po.orders?.users?.full_name || "Cliente",
-                    customer_phone: po.orders?.users?.phone || "No disponible"
-                })) || []
-            };
+            return { ...pkg, orders: pkgOrders?.map(po => ({ order_id: po.orders?.id, user_id: po.orders?.user_id, delivery_address: po.orders?.delivery_address, delivery_latitude: po.orders?.delivery_latitude, delivery_longitude: po.orders?.delivery_longitude, total_amount: po.orders?.total_amount, tip_amount: po.orders?.tip_amount || 0, payment_method: po.orders?.payment_method, created_at: po.orders?.created_at, zone: po.orders?.zone, delivery_window_start: po.orders?.delivery_window_start, delivery_window_end: po.orders?.delivery_window_end, delivery_window_date: po.orders?.delivery_window_date, customer_name: po.orders?.users?.full_name || "Cliente", customer_phone: po.orders?.users?.phone || "No disponible" })) || [] };
         }));
         res.json(formattedPackages);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -731,47 +573,53 @@ app.post("/driver/orders/:orderId/start-trip", authMiddleware, driverMiddleware,
         const { data: updated, error: updateError } = await supabase.from("orders").update({ status: "in_progress", updated_at: new Date().toISOString() }).eq("id", orderId).select().single();
         if (updateError) throw updateError;
         const { data: customer } = await supabase.from("users").select("fcm_token, full_name").eq("id", order.user_id).single();
-        if (customer?.fcm_token) {
-            await sendPushNotification(customer.fcm_token, "🚴 Tu pedido está en camino", "Tu repartidor ya salió con tu pedido. Puedes seguirlo en tiempo real.");
-        }
+        if (customer?.fcm_token) await sendPushNotification(customer.fcm_token, "Tu pedido esta en camino", "Tu repartidor ya salio con tu pedido. Puedes seguirlo en tiempo real.");
         res.json({ success: true, order: updated });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ✅ CORREGIDO: logs detallados para diagnosticar error de guardado
-app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) => {
-    const { orderId, latitude, longitude } = req.body;
-    if (!orderId || latitude === undefined || longitude === undefined) {
-        console.error('❌ driver/location: faltan campos', { orderId, latitude, longitude });
-        return res.status(400).json({ error: "orderId, latitude y longitude requeridos" });
-    }
+// ✅ NUEVO: cancelar pedido por driver - vuelve a disponible
+app.post("/driver/orders/:orderId/cancel", authMiddleware, driverMiddleware, async (req, res) => {
+    const { orderId } = req.params;
     try {
-        const { data: order, error: orderError } = await supabase.from("orders").select("driver_id").eq("id", orderId).single();
-        if (orderError || !order) {
-            console.error('❌ driver/location: pedido no encontrado', orderId, orderError?.message);
-            return res.status(404).json({ error: "Pedido no encontrado" });
+        const { data: order, error: orderError } = await supabase.from("orders").select("id, driver_id, dynamic_package_id, status").eq("id", orderId).single();
+        if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
+        if (order.driver_id !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido" });
+
+        // Quitar pedido del paquete
+        await supabase.from("package_orders").delete().eq("order_id", orderId);
+
+        // Si el paquete queda vacio, eliminarlo
+        if (order.dynamic_package_id) {
+            const { data: remaining } = await supabase.from("package_orders").select("order_id").eq("package_id", order.dynamic_package_id);
+            if (!remaining || remaining.length === 0) {
+                await supabase.from("dynamic_packages").delete().eq("id", order.dynamic_package_id);
+            }
         }
-        if (order.driver_id !== req.user.userId) {
-            console.error('❌ driver/location: driver no coincide', { orderDriverId: order.driver_id, userId: req.user.userId });
-            return res.status(403).json({ error: "No tienes este pedido" });
-        }
-        const { data, error: upsertError } = await supabase.from("driver_locations").upsert({
-            driver_id: req.user.userId,
-            order_id: orderId,
-            latitude,
-            longitude,
-            updated_at: new Date().toISOString()
-        }, { onConflict: "order_id" }).select();
-        if (upsertError) {
-            console.error('❌ driver/location: error upsert', JSON.stringify(upsertError));
-            return res.status(500).json({ error: upsertError.message });
-        }
-        console.log('✅ driver/location guardado:', orderId, latitude, longitude);
-        res.json({ success: true });
+
+        // Pedido vuelve a pending sin driver ni paquete
+        await supabase.from("orders").update({ status: "pending", driver_id: null, dynamic_package_id: null, updated_at: new Date().toISOString() }).eq("id", orderId);
+
+        console.log(`✅ Pedido ${orderId} cancelado por driver y vuelve a disponible`);
+        res.json({ success: true, message: "Pedido cancelado y disponible de nuevo" });
     } catch (e) {
-        console.error('❌ driver/location: excepcion', e.message);
+        console.error("❌ Error cancelando pedido:", e.message);
         res.status(500).json({ error: e.message });
     }
+});
+
+app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) => {
+    const { orderId, latitude, longitude } = req.body;
+    if (!orderId || latitude === undefined || longitude === undefined) { console.error('❌ driver/location: faltan campos', { orderId, latitude, longitude }); return res.status(400).json({ error: "orderId, latitude y longitude requeridos" }); }
+    try {
+        const { data: order, error: orderError } = await supabase.from("orders").select("driver_id").eq("id", orderId).single();
+        if (orderError || !order) { console.error('❌ driver/location: pedido no encontrado', orderId); return res.status(404).json({ error: "Pedido no encontrado" }); }
+        if (order.driver_id !== req.user.userId) { console.error('❌ driver/location: driver no coincide'); return res.status(403).json({ error: "No tienes este pedido" }); }
+        const { error: upsertError } = await supabase.from("driver_locations").upsert({ driver_id: req.user.userId, order_id: orderId, latitude, longitude, updated_at: new Date().toISOString() }, { onConflict: "order_id" });
+        if (upsertError) { console.error('❌ driver/location: error upsert', JSON.stringify(upsertError)); return res.status(500).json({ error: upsertError.message }); }
+        console.log(`✅ driver/location guardado: ${orderId} ${latitude} ${longitude}`);
+        res.json({ success: true });
+    } catch (e) { console.error('❌ driver/location: excepcion', e.message); res.status(500).json({ error: e.message }); }
 });
 
 app.get("/driver/location/:orderId", authMiddleware, async (req, res) => {
@@ -801,8 +649,6 @@ app.get("/driver/location/by-driver/:driverId", authMiddleware, async (req, res)
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== ADMIN - DASHBOARD ====================
-
 app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const today = new Date().toISOString().split("T")[0];
@@ -826,8 +672,6 @@ app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, r
         res.json({ totalProducts: totalProducts || 0, lowStockProducts, outOfStockProducts: outOfStockProducts || 0, totalOrdersToday, totalRevenueToday, totalOrdersWeek, totalRevenueWeek, totalDrivers: totalDrivers || 0, activeDrivers, pendingPayments, pendingYappiApprovals: pendingYappiApprovals || 0 });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-// ==================== ADMIN - PRODUCTOS ====================
 
 app.get("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
     try {
@@ -966,40 +810,22 @@ app.get("/admin/drivers/list", authMiddleware, adminMiddleware, async (req, res)
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== STRIPE ====================
-
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     try {
         const { amount, currency = 'usd' } = req.body;
         if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto invalido' });
         const paymentIntent = await stripe.paymentIntents.create({ amount, currency, metadata: { userId: req.user.userId } });
         res.json({ clientSecret: paymentIntent.client_secret });
-    } catch (error) {
-        console.error('❌ Stripe error:', error.message);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { console.error('❌ Stripe error:', error.message); res.status(500).json({ error: error.message }); }
 });
-
-// ==================== ADMIN - PEDIDOS PENDIENTES ====================
 
 app.get("/admin/orders/pending", authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const { data, error } = await supabase.from("orders").select("id, total_amount, tip_amount, delivery_address, delivery_date, delivery_window_start, delivery_window_end, delivery_window_date, status, zone, created_at, payment_method, dynamic_package_id, driver_id, users!orders_user_id_fkey(full_name, phone), order_items(quantity, unit_price, products(name, unit))").in("status", ["pending", "confirmed", "in_progress"]).eq("payment_status", "completed").order("delivery_window_date", { ascending: true }).order("delivery_window_start", { ascending: true });
         if (error) throw error;
-        res.json(data.map(o => ({
-            id: o.id, total_amount: parseFloat(o.total_amount), tip_amount: parseFloat(o.tip_amount || 0),
-            delivery_address: o.delivery_address, delivery_date: o.delivery_date,
-            delivery_window_start: o.delivery_window_start, delivery_window_end: o.delivery_window_end,
-            delivery_window_date: o.delivery_window_date, status: o.status, zone: o.zone,
-            created_at: o.created_at, payment_method: o.payment_method,
-            is_assigned: !!o.dynamic_package_id, driver_id: o.driver_id || null,
-            customer_name: o.users?.full_name || "Cliente", customer_phone: o.users?.phone || "",
-            items: (o.order_items || []).map(i => ({ name: i.products?.name || "Producto", unit: i.products?.unit || "", quantity: i.quantity, subtotal: i.unit_price * i.quantity }))
-        })));
+        res.json(data.map(o => ({ id: o.id, total_amount: parseFloat(o.total_amount), tip_amount: parseFloat(o.tip_amount || 0), delivery_address: o.delivery_address, delivery_date: o.delivery_date, delivery_window_start: o.delivery_window_start, delivery_window_end: o.delivery_window_end, delivery_window_date: o.delivery_window_date, status: o.status, zone: o.zone, created_at: o.created_at, payment_method: o.payment_method, is_assigned: !!o.dynamic_package_id, driver_id: o.driver_id || null, customer_name: o.users?.full_name || "Cliente", customer_phone: o.users?.phone || "", items: (o.order_items || []).map(i => ({ name: i.products?.name || "Producto", unit: i.products?.unit || "", quantity: i.quantity, subtotal: i.unit_price * i.quantity })) })));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-// ==================== BANNERS ====================
 
 app.get("/banners", async (req, res) => {
     try {
@@ -1044,8 +870,6 @@ app.patch("/admin/banners/:id", authMiddleware, adminMiddleware, async (req, res
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ==================== DEBUG ====================
-
 app.get("/debug/users", async (req, res) => {
     try {
         const { data, error } = await supabase.from("users").select("id, email, full_name, role, user_type");
@@ -1053,8 +877,6 @@ app.get("/debug/users", async (req, res) => {
         res.json(data);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-// ==================== START ====================
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
