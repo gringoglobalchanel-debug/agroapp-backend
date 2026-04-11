@@ -155,6 +155,30 @@ const adminMiddleware = async (req, res, next) => {
     next();
 };
 
+// ==================== REGISTRO DRIVER CON CODIGO ====================
+
+app.post("/auth/register/driver", async (req, res) => {
+    const { full_name, email, password, phone, address, invite_code } = req.body;
+    if (!full_name || !email || !password || !address) return res.status(400).json({ error: "Faltan campos" });
+    if (!invite_code || invite_code !== process.env.DRIVER_INVITE_CODE) {
+        return res.status(403).json({ error: "Codigo de invitacion invalido" });
+    }
+    try {
+        const { data: existing } = await supabase.from("users").select("id").eq("email", email).single();
+        if (existing) return res.status(400).json({ error: "Email ya registrado" });
+        const hashed = await bcrypt.hash(password, 10);
+        const { data, error } = await supabase.from("users").insert({
+            full_name, email, password_hash: hashed, phone, address,
+            role: "cliente", user_type: "driver"
+        }).select().single();
+        if (error) throw error;
+        console.log(`✅ Nuevo driver registrado: ${email}`);
+        res.json({ message: "Cuenta de repartidor creada", userId: data.id });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ==================== AUTH ====================
+
 app.post("/auth/register", async (req, res) => {
     const { full_name: name, email, password, phone, address, user_type } = req.body;
     if (!name || !email || !password || !address) return res.status(400).json({ error: "Faltan campos" });
@@ -252,6 +276,8 @@ app.post("/auth/fcm-token", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== PRODUCTOS ====================
+
 app.get("/products", async (req, res) => {
     try {
         const { data, error } = await supabase.from("products").select("*, categories(name)").eq("is_available", true).order("category_id");
@@ -259,6 +285,8 @@ app.get("/products", async (req, res) => {
         res.json(data);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ==================== PEDIDOS ====================
 
 app.post("/orders", authMiddleware, async (req, res) => {
     const { items, paymentMethod, payment_method, deliveryAddress, delivery_address, delivery_latitude, delivery_longitude, notes, tip_amount } = req.body;
@@ -343,6 +371,8 @@ app.patch("/orders/:id/cancel", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== YAPPI ====================
+
 function generateReferenceCode() {
     const date = new Date();
     const year = date.getFullYear();
@@ -396,6 +426,8 @@ app.post("/orders/:id/confirm-yappi", authMiddleware, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== ADMIN - YAPPI ====================
+
 app.get("/admin/yappi/pending", authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const { data, error } = await supabase.from("orders").select("id, total_amount, tip_amount, reference_code, created_at, payment_confirmed_at, delivery_address, status, zone, delivery_window_start, delivery_window_end, delivery_window_date, users!orders_user_id_fkey(full_name, phone, email)").eq("payment_method", "yappi").in("status", ["waiting_confirmation", "pending_approval"]).order("created_at", { ascending: false });
@@ -432,10 +464,14 @@ app.post("/admin/yappi/:orderId/reject", authMiddleware, adminMiddleware, async 
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== ADMIN MANUAL AGRUPACION ====================
+
 app.post("/admin/agrupar-pedidos", authMiddleware, adminMiddleware, async (req, res) => {
     try { await agruparPedidosPorZona(); res.json({ success: true, message: "Agrupacion ejecutada manualmente" }); }
     catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ==================== ADMIN - ASIGNACION MANUAL A DRIVER ====================
 
 app.post("/admin/orders/:orderId/assign-driver", authMiddleware, adminMiddleware, async (req, res) => {
     const { orderId } = req.params;
@@ -455,6 +491,8 @@ app.post("/admin/orders/:orderId/assign-driver", authMiddleware, adminMiddleware
         res.json({ success: true, message: `Pedido asignado a ${driver.full_name}`, packageId: pkg.id });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ==================== VENDEDOR ====================
 
 app.get("/vendor/orders/by-client", authMiddleware, async (req, res) => {
     if (req.user.role !== "vendedor") return res.status(403).json({ error: "No autorizado" });
@@ -485,6 +523,8 @@ app.patch("/vendor/orders/:id/status", authMiddleware, async (req, res) => {
         res.json(data);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ==================== DRIVER - PAQUETES ====================
 
 app.get("/driver/packages/available", authMiddleware, driverMiddleware, async (req, res) => {
     try {
@@ -578,34 +618,21 @@ app.post("/driver/orders/:orderId/start-trip", authMiddleware, driverMiddleware,
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ✅ NUEVO: cancelar pedido por driver - vuelve a disponible
 app.post("/driver/orders/:orderId/cancel", authMiddleware, driverMiddleware, async (req, res) => {
     const { orderId } = req.params;
     try {
         const { data: order, error: orderError } = await supabase.from("orders").select("id, driver_id, dynamic_package_id, status").eq("id", orderId).single();
         if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.driver_id !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido" });
-
-        // Quitar pedido del paquete
         await supabase.from("package_orders").delete().eq("order_id", orderId);
-
-        // Si el paquete queda vacio, eliminarlo
         if (order.dynamic_package_id) {
             const { data: remaining } = await supabase.from("package_orders").select("order_id").eq("package_id", order.dynamic_package_id);
-            if (!remaining || remaining.length === 0) {
-                await supabase.from("dynamic_packages").delete().eq("id", order.dynamic_package_id);
-            }
+            if (!remaining || remaining.length === 0) await supabase.from("dynamic_packages").delete().eq("id", order.dynamic_package_id);
         }
-
-        // Pedido vuelve a pending sin driver ni paquete
         await supabase.from("orders").update({ status: "pending", driver_id: null, dynamic_package_id: null, updated_at: new Date().toISOString() }).eq("id", orderId);
-
         console.log(`✅ Pedido ${orderId} cancelado por driver y vuelve a disponible`);
         res.json({ success: true, message: "Pedido cancelado y disponible de nuevo" });
-    } catch (e) {
-        console.error("❌ Error cancelando pedido:", e.message);
-        res.status(500).json({ error: e.message });
-    }
+    } catch (e) { console.error("❌ Error cancelando pedido:", e.message); res.status(500).json({ error: e.message }); }
 });
 
 app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) => {
@@ -649,6 +676,8 @@ app.get("/driver/location/by-driver/:driverId", authMiddleware, async (req, res)
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== ADMIN - DASHBOARD ====================
+
 app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const today = new Date().toISOString().split("T")[0];
@@ -672,6 +701,8 @@ app.get("/admin/dashboard/stats", authMiddleware, adminMiddleware, async (req, r
         res.json({ totalProducts: totalProducts || 0, lowStockProducts, outOfStockProducts: outOfStockProducts || 0, totalOrdersToday, totalRevenueToday, totalOrdersWeek, totalRevenueWeek, totalDrivers: totalDrivers || 0, activeDrivers, pendingPayments, pendingYappiApprovals: pendingYappiApprovals || 0 });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ==================== ADMIN - PRODUCTOS ====================
 
 app.get("/admin/products", authMiddleware, adminMiddleware, async (req, res) => {
     try {
@@ -810,6 +841,8 @@ app.get("/admin/drivers/list", authMiddleware, adminMiddleware, async (req, res)
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== STRIPE ====================
+
 app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     try {
         const { amount, currency = 'usd' } = req.body;
@@ -819,6 +852,8 @@ app.post('/payments/create-intent', authMiddleware, async (req, res) => {
     } catch (error) { console.error('❌ Stripe error:', error.message); res.status(500).json({ error: error.message }); }
 });
 
+// ==================== ADMIN - PEDIDOS PENDIENTES ====================
+
 app.get("/admin/orders/pending", authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const { data, error } = await supabase.from("orders").select("id, total_amount, tip_amount, delivery_address, delivery_date, delivery_window_start, delivery_window_end, delivery_window_date, status, zone, created_at, payment_method, dynamic_package_id, driver_id, users!orders_user_id_fkey(full_name, phone), order_items(quantity, unit_price, products(name, unit))").in("status", ["pending", "confirmed", "in_progress"]).eq("payment_status", "completed").order("delivery_window_date", { ascending: true }).order("delivery_window_start", { ascending: true });
@@ -826,6 +861,8 @@ app.get("/admin/orders/pending", authMiddleware, adminMiddleware, async (req, re
         res.json(data.map(o => ({ id: o.id, total_amount: parseFloat(o.total_amount), tip_amount: parseFloat(o.tip_amount || 0), delivery_address: o.delivery_address, delivery_date: o.delivery_date, delivery_window_start: o.delivery_window_start, delivery_window_end: o.delivery_window_end, delivery_window_date: o.delivery_window_date, status: o.status, zone: o.zone, created_at: o.created_at, payment_method: o.payment_method, is_assigned: !!o.dynamic_package_id, driver_id: o.driver_id || null, customer_name: o.users?.full_name || "Cliente", customer_phone: o.users?.phone || "", items: (o.order_items || []).map(i => ({ name: i.products?.name || "Producto", unit: i.products?.unit || "", quantity: i.quantity, subtotal: i.unit_price * i.quantity })) })));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ==================== BANNERS ====================
 
 app.get("/banners", async (req, res) => {
     try {
@@ -870,6 +907,8 @@ app.patch("/admin/banners/:id", authMiddleware, adminMiddleware, async (req, res
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ==================== DEBUG ====================
+
 app.get("/debug/users", async (req, res) => {
     try {
         const { data, error } = await supabase.from("users").select("id, email, full_name, role, user_type");
@@ -877,6 +916,8 @@ app.get("/debug/users", async (req, res) => {
         res.json(data);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ==================== START ====================
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
