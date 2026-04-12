@@ -159,7 +159,7 @@ const adminMiddleware = async (req, res, next) => {
 
 app.post("/auth/register/driver", async (req, res) => {
     const { full_name, email, password, phone, address, invite_code } = req.body;
-    if (!full_name || !email || !password || !address) return res.status(400).json({ error: "Faltan campos" });
+    if (!full_name || !email || !password) return res.status(400).json({ error: "Faltan campos: nombre, email y contraseña son requeridos" });
     if (!invite_code || invite_code !== process.env.DRIVER_INVITE_CODE) {
         return res.status(403).json({ error: "Codigo de invitacion invalido" });
     }
@@ -168,7 +168,7 @@ app.post("/auth/register/driver", async (req, res) => {
         if (existing) return res.status(400).json({ error: "Email ya registrado" });
         const hashed = await bcrypt.hash(password, 10);
         const { data, error } = await supabase.from("users").insert({
-            full_name, email, password_hash: hashed, phone, address,
+            full_name, email, password_hash: hashed, phone: phone || null, address: address || null,
             role: "cliente", user_type: "driver"
         }).select().single();
         if (error) throw error;
@@ -181,14 +181,25 @@ app.post("/auth/register/driver", async (req, res) => {
 
 app.post("/auth/register", async (req, res) => {
     const { full_name: name, email, password, phone, address, user_type } = req.body;
-    if (!name || !email || !password || !address) return res.status(400).json({ error: "Faltan campos" });
+    // ✅ FIX: address ya no es obligatorio en el registro
+    if (!name || !email || !password) return res.status(400).json({ error: "Faltan campos: nombre, email y contraseña son requeridos" });
+    if (password.length < 6) return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
     const userType = user_type === "driver" ? "driver" : "cliente";
     try {
         const { data: existing } = await supabase.from("users").select("id").eq("email", email).single();
         if (existing) return res.status(400).json({ error: "Email ya registrado" });
         const hashed = await bcrypt.hash(password, 10);
-        const { data, error } = await supabase.from("users").insert({ full_name: name, email, password_hash: hashed, phone, address, role: "cliente", user_type: userType }).select().single();
+        const { data, error } = await supabase.from("users").insert({
+            full_name: name,
+            email,
+            password_hash: hashed,
+            phone: phone || null,
+            address: address || null,
+            role: "cliente",
+            user_type: userType
+        }).select().single();
         if (error) throw error;
+        console.log(`✅ Nuevo usuario registrado: ${email}`);
         res.json({ message: "Usuario creado", userId: data.id });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
