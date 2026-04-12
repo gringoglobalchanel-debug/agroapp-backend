@@ -159,7 +159,7 @@ const adminMiddleware = async (req, res, next) => {
 
 app.post("/auth/register/driver", async (req, res) => {
     const { full_name, email, password, phone, address, invite_code } = req.body;
-    if (!full_name || !email || !password) return res.status(400).json({ error: "Faltan campos: nombre, email y contraseña son requeridos" });
+    if (!full_name || !email || !password) return res.status(400).json({ error: "Faltan campos: nombre, email y contrasena son requeridos" });
     if (!invite_code || invite_code !== process.env.DRIVER_INVITE_CODE) {
         return res.status(403).json({ error: "Codigo de invitacion invalido" });
     }
@@ -181,22 +181,17 @@ app.post("/auth/register/driver", async (req, res) => {
 
 app.post("/auth/register", async (req, res) => {
     const { full_name: name, email, password, phone, address, user_type } = req.body;
-    // ✅ FIX: address ya no es obligatorio en el registro
-    if (!name || !email || !password) return res.status(400).json({ error: "Faltan campos: nombre, email y contraseña son requeridos" });
-    if (password.length < 6) return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
+    if (!name || !email || !password) return res.status(400).json({ error: "Faltan campos: nombre, email y contrasena son requeridos" });
+    if (password.length < 6) return res.status(400).json({ error: "La contrasena debe tener al menos 6 caracteres" });
     const userType = user_type === "driver" ? "driver" : "cliente";
     try {
         const { data: existing } = await supabase.from("users").select("id").eq("email", email).single();
         if (existing) return res.status(400).json({ error: "Email ya registrado" });
         const hashed = await bcrypt.hash(password, 10);
         const { data, error } = await supabase.from("users").insert({
-            full_name: name,
-            email,
-            password_hash: hashed,
-            phone: phone || null,
-            address: address || null,
-            role: "cliente",
-            user_type: userType
+            full_name: name, email, password_hash: hashed,
+            phone: phone || null, address: address || null,
+            role: "cliente", user_type: userType
         }).select().single();
         if (error) throw error;
         console.log(`✅ Nuevo usuario registrado: ${email}`);
@@ -629,21 +624,62 @@ app.post("/driver/orders/:orderId/start-trip", authMiddleware, driverMiddleware,
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ✅ FIX: Al cancelar, crea nuevo paquete disponible para que otros drivers lo puedan tomar
 app.post("/driver/orders/:orderId/cancel", authMiddleware, driverMiddleware, async (req, res) => {
     const { orderId } = req.params;
     try {
-        const { data: order, error: orderError } = await supabase.from("orders").select("id, driver_id, dynamic_package_id, status").eq("id", orderId).single();
+        const { data: order, error: orderError } = await supabase.from("orders")
+            .select("id, driver_id, dynamic_package_id, status, zone, delivery_date, delivery_window_start, delivery_window_end")
+            .eq("id", orderId).single();
         if (orderError || !order) return res.status(404).json({ error: "Pedido no encontrado" });
         if (order.driver_id !== req.user.userId) return res.status(403).json({ error: "No tienes este pedido" });
+
+        // 1. Eliminar relacion package_orders
         await supabase.from("package_orders").delete().eq("order_id", orderId);
+
+        // 2. Si el paquete viejo queda vacio, eliminarlo
         if (order.dynamic_package_id) {
-            const { data: remaining } = await supabase.from("package_orders").select("order_id").eq("package_id", order.dynamic_package_id);
-            if (!remaining || remaining.length === 0) await supabase.from("dynamic_packages").delete().eq("id", order.dynamic_package_id);
+            const { data: remaining } = await supabase.from("package_orders")
+                .select("order_id").eq("package_id", order.dynamic_package_id);
+            if (!remaining || remaining.length === 0) {
+                await supabase.from("dynamic_packages").delete().eq("id", order.dynamic_package_id);
+            }
         }
-        await supabase.from("orders").update({ status: "pending", driver_id: null, dynamic_package_id: null, updated_at: new Date().toISOString() }).eq("id", orderId);
-        console.log(`✅ Pedido ${orderId} cancelado por driver y vuelve a disponible`);
+
+        // 3. Resetear el pedido sin paquete
+        await supabase.from("orders").update({
+            status: "pending",
+            driver_id: null,
+            dynamic_package_id: null,
+            updated_at: new Date().toISOString()
+        }).eq("id", orderId);
+
+        // 4. Crear nuevo paquete disponible con este pedido
+        const { data: newPkg, error: pkgError } = await supabase.from("dynamic_packages").insert({
+            current_size: 1,
+            max_size: 8,
+            status: "available",
+            zone: order.zone || "centro",
+            delivery_date: order.delivery_date,
+            delivery_window_start: order.delivery_window_start,
+            delivery_window_end: order.delivery_window_end,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        }).select().single();
+
+        if (!pkgError && newPkg) {
+            await supabase.from("package_orders").insert({ package_id: newPkg.id, order_id: orderId });
+            await supabase.from("orders").update({ dynamic_package_id: newPkg.id }).eq("id", orderId);
+            console.log(`✅ Pedido ${orderId} cancelado - nuevo paquete disponible: ${newPkg.id}`);
+        } else {
+            console.error(`❌ Error creando nuevo paquete:`, pkgError?.message);
+        }
+
         res.json({ success: true, message: "Pedido cancelado y disponible de nuevo" });
-    } catch (e) { console.error("❌ Error cancelando pedido:", e.message); res.status(500).json({ error: e.message }); }
+    } catch (e) {
+        console.error("❌ Error cancelando pedido:", e.message);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.post("/driver/location", authMiddleware, driverMiddleware, async (req, res) => {
